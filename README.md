@@ -19,5 +19,6 @@ This is the Graduation Portfolio Milestone for the Syracuse University School of
 
 Author Information
 - Author: Joe Hernandez
-- SUID#: 627926839E-mail: jahern01@syr.edu
+- SUID#: 627926839
+- E-mail: jahern01@syr.edu
 - Program: M.S. in Applied Data Science, Syracuse University, School of Information Studies (iSchool)
