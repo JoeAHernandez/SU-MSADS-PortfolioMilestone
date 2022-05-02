@@ -1,0 +1,326 @@
+---
+title: "Hernandez_Joe_Assignment1"
+author: 'Team 5: Joe Hernandez'
+date: "3/31/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+### Pat Carlin, Pene Seloti, Kenneth McKee, Joe Herndandez
+### FIN 654 - Assignment 1
+
+## Part 1: HO2 data preparation and exploration
+
+In this set we will build a data set using filters and if and diff statements. We will then answer some questions using plots and a pivot table report. We will then write a function to house our approach in case we would like to run the same analysis on other data sets.
+
+### Problem
+Supply chain managers at our company continue to note we have a significant exposure to heating oil prices (Heating Oil No. 2, or HO2), specifically New York Harbor. The exposure hits the variable cost of producing several products. When HO2 is volatile, so is earnings. Our company has missed earnings forecasts for five straight quarters. To get a handle on HO2 we download this data set and review some basic aspects of the prices.
+
+Loading and cleaning the data in question.
+```{r, echo=FALSE}
+# Read in data
+# package EIAdata
+#
+setwd("C:\\Users\\divra\\Desktop\\Syracuse University\\FIN 654\\Assignments")
+HO2 <- read.csv("nyhh02.csv", header = T, stringsAsFactors = F)
+# stringsAsFactors sets dates as character type
+head(HO2)
+HO2 <- na.omit(HO2) ## to clean up any missing data
+# use na.approx() as well
+str(HO2) # review the structure of the data so far
+```
+
+
+### Question 1 
+
+What is the nature of HO2 returns? We want to reflect the ups and downs of price movements, something of prime interest to management. First, we calculate percentage changes as log returns. Our interest is in the ups and downs. To look at that we use if and else statements to define a new column called direction. We will build a data frame to house this analysis.
+
+```{r, echo=FALSE}
+# Construct expanded data frame
+return <- as.numeric(diff(log(HO2$DHOILNYH))) * 100 # Euler 
+size <- as.numeric(abs(return)) # size is indicator of volatility
+direction <- ifelse(return > 0, "up", ifelse(return < 0, "down", "same")) # another indicator of volatility
+# =if(return > 0, "up", if(return < 0, "down", "same"))
+date <- as.Date(HO2$DATE[-1], "%m/%d/%Y") # length of DATE is length of return +1: omit 1st observation
+price <- as.numeric(HO2$DHOILNYH[-1]) # length of DHOILNYH is length of return +1: omit first observation
+HO2.df <- na.omit(data.frame(date = date, price = price, return = return, size = size, direction = direction)) # clean up data frame by omitting NAs
+str(HO2.df)
+```
+
+
+For visualization we install ggplot2 
+
+```{r, echo=FALSE}
+library(ggplot2)
+p <- ggplot(HO2.df, aes(x = date, y = return, group = 1)) + geom_line(colour = "blue")
+p
+```
+
+P1A1: The lowest outlier for negative returns is around -45%, and about 20% for positive returns. By taking the absolute value of the return we can view the overall deviation over time regardless of positive or negative returns. Notice that the around the .com crash (2000), and 9/11 (2001) as significant dates in the timeline. The overlay the initial return against the absolute value graph is then integrated into one concise graph.
+
+
+By taking the absolute value of the return we can view the overal deviation over time. We can view this as 'size'. Let’s try a bar graph of the absolute value of price rates. We use geom_bar to build this picture.
+
+```{r, echo=FALSE}
+# library(ggplot2)
+p <- ggplot(HO2.df, aes(x = date, y = size, group = 1)) + geom_bar(stat = "identity", colour = "green")
+p
+
+```
+
+Let’s try a bar graph of the absolute value of price rates. We use geom_bar to build this picture.
+
+
+We will now overlay the initial return against the absolute value graph.
+
+```{r, echo=FALSE}
+p <- ggplot(HO2.df, aes(date, size)) + geom_bar(stat = "identity", colour = "darkorange") + geom_line(data = HO2.df, aes(date, return), colour = "blue")
+p
+```
+
+Notice from the mid 90's there was a large increase in volatility in both return and size. Volatility slowed down around 2010, but has since risen to a large number. Graphically ggplot gives us a clear graphic view for our business question.
+
+
+### Question 2 
+
+Let’s dig deeper and compute mean, standard deviation, etc. Load the  data_moments() function. Run the function using the HO2.df$return subset of the data and write a knitr::kable() report.
+
+
+```{r, echo=FALSE}
+# Load the data_moments() function
+## data_moments function
+## INPUTS: vector
+## OUTPUTS: list of scalars (mean, sd, median, skewness, kurtosis)
+data_moments <- function(data){
+  library(moments)
+  mean.r <- mean(data)
+  sd.r <- sd(data)
+  median.r <- median(data)
+  skewness.r <- skewness(data)
+  kurtosis.r <- kurtosis(data)
+  result <- data.frame(mean = mean.r, std_dev = sd.r, median = median.r, skewness = skewness.r, kurtosis = kurtosis.r)
+  return(result)
+}
+# Run data_moments()
+answer <- data_moments(HO2.df$return)
+# Build pretty table
+answer <- round(answer, 4)
+knitr::kable(answer)
+```
+
+P1A2: According to the table, the measures of central tendency for the change in the price of oil is close to zero. Where the mean is .00179% and the median is 0%. This shows there is no drastic change in daily oil prices, but on average will increase subtlety. The standard deviation is 2.5336% of the change in prices over roughly 30 years of data. The data for oil prices is negatively (left) skewed where the majority of the return data right of what a normally distributed curve would be. This is heavily influenced by the negative outlier where the minimum loss in returns nearing 47% in a day. The kurtosis of this data is significantly high which shows significant changes in the change of price is rare; however, the frequency of price changes are slightly positive.
+
+
+###Question 3
+
+Let’s pivot size and return on direction. What is the average and range of returns by direction? How often might we view positive or negative movements in HO2?
+
+
+```{r, echo=FALSE}
+# Counting
+table(HO2.df$return < 0) # one way
+```
+
+```{r, echo=FALSE}
+table(HO2.df$return > 0)
+```
+
+```{r, echo=FALSE}
+table(HO2.df$direction) # this counts 0 returns as negative
+```
+
+
+```{r, echo=FALSE}
+table(HO2.df$return == 0)
+```
+
+```{r, echo=FALSE}
+# Pivoting
+library(dplyr)
+
+## Attaching package: 'dplyr'
+## The following objects are masked from 'package:stats':
+
+##     filter, lag
+
+## The following objects are masked from 'package:base':
+
+##     intersect, setdiff, setequal, union
+
+```
+
+```{r, echo=FALSE}
+## 1: filter to those houses with fairly high prices
+# pivot.table <-  filter(HO2.df, size > 0.5*max(size))
+## 2: set up data frame for by-group processing
+pivot.table <-  group_by(HO2.df, direction)
+## 3: calculate the summary metrics
+options(dplyr.width = Inf) ## to display all columns
+HO2.count <- length(HO2.df$return)
+pivot.table <-  summarise(pivot.table, return.avg = round(mean(return), 4), return.sd = round(sd(return), 4), quantile.5 = round(quantile(return, 0.05), 4), quantile.95 = round(quantile(return, 0.95), 4), percent = round((length(return)/HO2.count)*100, 2))
+# Build visual
+knitr::kable(pivot.table, digits = 2)
+```
+
+```{r, echo=FALSE}
+# Here is how we can produce a LaTeX formatted and rendered table
+# 
+library(xtable)
+HO2.caption <- "Heating Oil No. 2: 1986-2016"
+print(xtable(t(pivot.table), digits = 2, caption = HO2.caption, align=rep("r", 4), table.placement="V"))
+```
+
+```{r, echo=FALSE}
+print(xtable(answer), digits = 2)
+```
+
+
+P1A3: We begin our analysis by collecting the number of positive, negative, and zero returns this will result in 3,657 negative, 279 zero, and 3,760 positive returns. By percentage, this results in 47.52% negative, 3.63% zero, and 48.86% positive returns. This is almost an even split in the positive and negative returns in the price of oil that would make finding a trend in forecasting difficult. By average, the negative returns were -1.77% and the positive returns were 1.76% (we omit the zero returns as they will always be zero). Again this is close to an even split for gains, and by the frequency percentage compared to the average returns it shows that the overall change in oil prices will continue to be volatile but steadily increasing.
+
+
+## Part 2: HO2 analysis
+
+We will use the data from Part 1 to investigate the distribution of returns we generated. This will entail fitting the data to some parametric distributions as well as.
+
+
+### Problem
+
+We want to further characterize the distribution of up and down movements visually. Also we would like to repeat the analysis periodically for inclusion in management reports.
+
+
+### Question 1
+
+How can we show the differences in the shape of ups and downs in HO2, especially given our tolerance for risk? We can use the HO2.df data frame with ggplot2 and the cumulative relative frequency function stat_ecdf to begin to understand this data.
+
+```{r, echo=FALSE}
+HO2.tol.pct <- 0.95
+HO2.tol <- quantile(HO2.df$return, HO2.tol.pct)
+HO2.tol.label <- paste("Tolerable Rate = ", round(HO2.tol, 2), sep = "")
+ggplot(HO2.df, aes(return, fill = direction)) + stat_ecdf(colour = "blue", size = 0.75) + geom_vline(xintercept = HO2.tol, colour = "red", size = 1.5) + annotate("text", x = HO2.tol+5 , y = 0.75, label = HO2.tol.label, colour = "darkred")
+```
+
+P2A1: The graph illustrates that our tolerable rate is 3.6%. This suggests that there is a 5% probability that the return will be greater than 3.6%. In New York Harbor’s case, if the HO2 price increases more by 3.6% from the current price, additional approval (perhaps from management) is required. Additionally, the graph shows that if the return is a negative number (down) or zero, there is no probably that it will be greater than the threshold of 3.6%. This intuitively makes sense.
+
+
+### Question 2
+
+How can we regularly, and reliably, analyze HO2 price movements? For this requirement, let’s write a function similar to data_moments. Name this new function HO2_movement().
+
+```{r, echo=FALSE}
+## HO2_movement(file, caption)
+## input: HO2 csv file from /data directory
+## output: result for input to kable in $table and xtable in $xtable; 
+##         data frame for plotting and further analysis in $df.
+## Example: HO2.data <- HO2_movement(file = "data/nyhh02.csv", caption = "HO2 NYH")
+HO2_movement <- function(file = "data/nyhh02.csv", caption = "Heating Oil No. 2: 1986-2016"){
+  # Read file and deposit into variable
+  HO2 <- read.csv(file, header = T, stringsAsFactors = F)
+  # stringsAsFactors sets dates as character type
+  HO2 <- na.omit(HO2) ## to clean up any missing data
+  # Construct expanded data frame
+  return <- as.numeric(diff(log(HO2$DHOILNYH))) * 100
+  size <- as.numeric(abs(return)) # size is indicator of volatility
+  direction <- ifelse(return > 0, "up", ifelse(return < 0, "down", "same")) # another indicator of volatility
+  date <- as.Date(HO2$DATE[-1], "%m/%d/%Y") # length of DATE is length of return +1: omit 1st observation
+  price <- as.numeric(HO2$DHOILNYH[-1]) # length of DHOILNYH is length of return +1: omit first observation
+  HO2.df <- na.omit(data.frame(date = date, price = price, return = return, size = size, direction = direction)) # clean up data frame by omitting NAs
+  require(dplyr)
+  ## 1: filter if necessary
+  # pivot.table <-  filter(HO2.df, size > 0.5*max(size))
+  ## 2: set up data frame for by-group processing
+  pivot.table <-  group_by(HO2.df, direction)
+  ## 3: calculate the summary metrics
+  options(dplyr.width = Inf) ## to display all columns
+  HO2.count <- length(HO2.df$return)
+  pivot.table <-  summarise(pivot.table, return.avg = mean(return), return.sd = sd(return), quantile.5 = quantile(return, 0.05), quantile.95 = quantile(return, 0.95), percent = (length(return)/HO2.count)*100)
+  # Construct transpose of pivot table with xtable()
+  require(xtable)
+  pivot.xtable <- xtable(t(pivot.table), digits = 2, caption = caption, align=rep("r", 4), table.placement="V")
+  HO2.caption <- "Heating Oil No. 2: 1986-2016"
+  output.list <- list(table = pivot.table, xtable = pivot.xtable, df = HO2.df)
+return(output.list)
+}
+```
+
+Test HO2_movement() with data and display results in a table with 2 decimal places.
+
+```{r, echo=FALSE}
+setwd("C:\\Users\\divra\\Desktop\\Syracuse University\\FIN 654\\Assignments")
+knitr::kable(HO2_movement(file = "nyhh02.csv")$table, digits = 2)
+```
+
+
+P2A2: The results in the table can be used to create an upper and lower bound to help management predict with some level of certainty the rate of return and ultimately predict earnings. For example, if the return is a negative number (down) there is a 5% probability that it will be less than -4.78% (lower bound). On the other hand, if the return is a positive number (up) there is a 5% probability that it will be more than 4.82% (upper bound). These are good lower and upper bounds to have since the probability of the return being down or up are about split even at 47.52% and 48.86% (respectively). The remaining 3.63% probability is zero returns.
+
+
+Morale: more work today (build the function) means less work tomorrow (write yet another report).
+
+### Question 3
+
+Suppose we wanted to simulate future movements in HO2 returns. What distribution might we use to run those scenarios? Here, let’s use the MASS package’s fitdistr() function to find the optimal fit of the HO2 data to a parametric distribution. We will use the gamma distribution to simulate future heating oil #2 price scenarios.
+
+```{r, echo=FALSE}
+library(MASS)
+setwd("C:\\Users\\divra\\Desktop\\Syracuse University\\FIN 654\\Assignments")
+HO2.data <- HO2_movement(file = "nyhh02.csv", caption = "HO2 NYH")$df
+str(HO2.data)
+```
+
+```{r, echo=FALSE}
+fit.gamma.up <- fitdistr(HO2.data[HO2.data$direction == "up", "return"], "gamma", hessian = TRUE)
+fit.gamma.up
+# fit.t.same <- fitdistr(HO2.data[HO2.data$direction == "same", "return"], "gamma", hessian = TRUE) # a problem here is all observations = 0
+```
+
+
+```{r, echo=FALSE}
+fit.t.down <- fitdistr(HO2.data[HO2.data$direction == "down", "return"], "t", hessian = TRUE)
+fit.t.down
+```
+
+Here we are testing the data to see if the 't' distribution would be the best fit to correllate to our data in forcasting potential outcomes.
+
+
+```{r, echo=FALSE}
+fit.gamma.down <- fitdistr(-HO2.data[HO2.data$direction == "down", "return"], "gamma", hessian = TRUE) # gamma distribution defined for data >= 0
+fit.gamma.down
+```
+
+P2A3: You need to understand the function of fitting the data to the gamma distribution as well as some insights into what specifically the gamma distribution is calling. By fitting the data over the gamma and t distribution we can understand future returns with the data, but by understanding that values help you accept a distribution helps shape it.
+
+Modern Applied Statistics with S. Fourth Edition Description fitdistr = Maximum-likelihood fitting of univariate distributions, allowing parameters to be held fixed if desired.
+
+this model tries to fit the distribution can be predicted when we provide estimates of parameters.
+
+in this case we use the gamma distribution to simulate future prices and then fit those values to the model.
+
+
+## Conclusion
+
+### Skills and Tools
+
+some of the major packages used in the experiment.
+ggpplor2 - a package for visualizing data. In this case, data points over time series
+xtable - formats data into a table for easy production
+moments - supports creation of kurtosis and skewness
+dplyr - supports the shaping of data and data frames
+
+
+### Data Insights
+
+These elements were used to study the time series behavior in HO2 returns. “nyhh02.csv”
+return <- as.numeric(diff(log(HO2DHOILNYH))) * 100 # the return on the input date <- as.Date(HO2DATE[-1], “%m/%d/%Y”) # length of DATE is length of return +1: omit 1st observation # the x axis in time series
+price <- as.numeric(HO2$DHOILNYH[-1]) # length of DHOILNYH is length of return +1: omit first observation
+
+The data shows a significant kurtosis of more than 38. For normal distribution, the kurtosis is 3. This suggests that daily returns are centered around the mean of 0.0179 (or 1.79%). Additionally, with a maximum negative return of -45% and 20% for positive return this suggests a thick tail. This also suggests that when major events do occur, they impact oil prices significantly (both positively and negatively). This is evident in the early 90’s during the Gulf War, early 00’s during the .com bubble and 9/11, great recession in 2008, and more recently with the Trade Wars.
+
+
+### Business Remarks
+
+This is a very good demonstration of how R can process very complex ideas and package them into a simple and effective visualization. The process only requires the user to determine what the question is and what algorithm they would like to use to illustrate or research the outcomes. In this case, a date time stamp and a value was utilized to create the given outputs.It unlikely the company will be able to predict when the next major event will occur that will significantly impact oil prices. So, to lessen their exposure the company may want to consider procuring another commodity that is negatively correlated with oil prices (i.e. hedge). They may also consider procuring multiple commodities to diversify their portfolio of products. The timing of purchase with known business cycle may also play a key role. Lastly, the combination of these options may also offset the high volatility of oil prices and may ultimately help the company improve their forecast earnings.
+
+It unlikely the company will be able to predict when the next major event will occur that will significantly impact oil prices. So, to lessen their exposure the company may want to consider procuring another commodity that is negatively correlated with oil prices (i.e. hedge). They may also consider procuring multiple commodities to diversify their portfolio of products. The timing of purchase with known business cycle may also play a key role. Lastly, the combination of these options may also offset the high volatility of oil prices and may ultimately help the company improve their forecast earnings.
