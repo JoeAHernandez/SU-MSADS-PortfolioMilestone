@@ -6,7 +6,7 @@ This is the Graduation Portfolio Milestone for the Syracuse University School of
 ### 2. Professional Resume
 >Professional resume: Last updated February 2022
 ### 3. Assignments & Projects
->Compilation of all projects mentioned in the Write-up
+>Compilation of all projects mentioned in the write-up and presentation.
 - Statistical Methods in Information Systems Technology Assignments
 >>Compilation of course assignments and exam including feedback
 - Scripting for Data Analysis
