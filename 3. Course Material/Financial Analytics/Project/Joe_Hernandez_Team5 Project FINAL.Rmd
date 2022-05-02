@@ -1,0 +1,1523 @@
+---
+title: 'Financial Analytics Final Project: Portfolio Analytics'
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    source_code: embed
+    theme: "simplex"
+runtime: shiny
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(ggplot2)
+library(flexdashboard)
+library(shiny)
+library(QRM)
+library(qrmdata)
+library(xts)
+library(zoo)
+library(plotly)
+library(corrplot)
+#library(ggfortify)
+library(psych)
+
+rm(list = ls())
+# PAGE: Exploratory Analysis
+data <- na.omit(read.csv("C:\\Users\\l2pdwjah\\Desktop\\Professional Development\\Syracuse University\\Portfolio Milestone\\Portfolio Milestone\\PGE Analysis\\PCGdata1.csv", header = TRUE))
+data$DATE <- as.Date(data$DATE, "%m/%d/%Y")
+#data <- data[order(data$DATE),]
+# Compute log differences percent using as.matrix to force numeric type
+data.r <- diff(log(as.matrix(data[, -1]))) * 100
+data.r <- na.omit(data.r)
+# Create size and direction
+size <- na.omit(abs(data.r)) # size is indicator of volatility
+#head(size)
+colnames(size) <- paste(colnames(size),".size", sep = "") # Teetor
+direction <- ifelse(data.r > 0, 1, ifelse(data.r < 0, -1, 0)) # another indicator of volatility
+colnames(direction) <- paste(colnames(direction),".dir", sep = "")
+# Convert into a time series object: 
+# 1. Split into date and rates
+dates <- as.Date(data$DATE[-1], "%m/%d/%Y")
+dates.chr <- as.character(data$DATE[-1])
+values <- cbind(data.r, size, direction)
+# for dplyr pivoting and ggplot2 need a data frame also known as "tidy data"
+data.df <- data.frame(dates = dates, returns = data.r, size = size, direction = direction)
+data.df.nd <- data.frame(dates = dates.chr, returns = data.r, size = size, direction = direction, stringsAsFactors = FALSE) 
+#non-coerced dates for subsetting on non-date columns
+# 2. Make an xts object with row names equal to the dates
+data.xts <- na.omit(as.xts(values, dates)) #order.by=as.Date(dates, "%d/%m/%Y")))
+#str(data.xts)
+data.zr <- as.zooreg(data.xts)
+returns <- data.xts
+
+# PAGE: Market risk 
+corr.rolling <- function(x) {	
+  dim <- ncol(x)	
+  corr.r <- cor(x)[lower.tri(diag(dim), diag = FALSE)]	
+  return(corr.r)	
+}
+
+ALL.r <- data.xts[, 1:5]
+ALL.rd <- data[, -1]
+ALL.rd  <- as.xts(data[,-1], order.by=data[,1])
+window <- 90 #reactive({input$window})
+corr.returns <- rollapply(ALL.r, width = window, corr.rolling, align = "right", by.column = FALSE)
+#colnames(corr.returns) <- c("nickel & copper", "nickel & aluminium", "copper & aluminium")
+corr.returns.df <- data.frame(Date = index(corr.returns), elec.copper = corr.returns[,2], elec.NGas = corr.returns[,3], copper.NGas = corr.returns[,4]) 
+
+# Market dependencies
+library(matrixStats)
+R.corr <- apply.monthly(as.xts(ALL.r), FUN = cor)
+R.vols <- apply.monthly(ALL.r, FUN = colSds) # from MatrixStats	
+# Form correlation matrix for one month 	
+R.corr.1 <- matrix(R.corr[20,], nrow = 5, ncol = 5, byrow = FALSE)	
+rownames(R.corr.1) <- colnames(ALL.r[,1:5])	
+colnames(R.corr.1) <- rownames(R.corr.1)	
+R.corr <- R.corr[, c(2, 3, 6)]
+colnames(R.corr) <- colnames(corr.returns) 	
+colnames(R.vols) <- c("elec.vols", "copper.vols", "NGas.vols","stock.vols","Tbill.vols")	
+R.corr.vols <- na.omit(merge(R.corr, R.vols))
+elec.vols <- as.numeric(R.corr.vols[,"elec.vols"])	
+copper.vols <- as.numeric(R.corr.vols[,"copper.vols"])	
+NGas.vols <- as.numeric(R.corr.vols[,"NGas.vols"])	
+stock.vols <- as.numeric(R.corr.vols[,"stock.vols"])
+Tbill.vols <- as.numeric(R.corr.vols[,"Tbill.vols"])
+
+
+
+library(quantreg)
+# hist(rho.fisher[, 1])
+elec.corrs <- R.corr.vols[,2]
+#hist(elec.corrs)
+taus <- seq(.05,.95,.05)	# Roger Koenker UI Bob Hogg and Allen Craig
+fit.rq.elec.copper <- rq(elec.corrs ~ copper.vols, tau = taus)	
+fit.lm.elec.copper <- lm(elec.corrs ~ copper.vols)	
+#' Some test statements	
+#summary(fit.rq.elec.copper, se = "boot")
+#'
+#summary(fit.lm.elec.copper, se = "boot")
+#plot(summary(fit.rq.elec.copper), parm = "copper.vols", main = "nickel-copper correlation sensitivity to copper volatility") #, ylim = c(-0.1 , 0.1))	
+```
+
+
+
+Background
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+
+### Problem
+
+Pacific Gas and Electric (PG&E) is the largest power company in California. Today, they service about 5.4 million electricity customers and 4.5 million natural-gas customers. Additionally, the state of California sets the rates that PG&E charge customers and require them to provide as much power as the customer demands. In the wake of recent wildfires, the company now faces potential claims that could exceed $30 billion. On January 29th, PG&E filed bankruptcy and is seeking protection from the state to cap liability claims. The bankruptcy courts will review power contracts as many of them are charging energy above market price. Since the bankruptcy announcement, PG&E stock price has declined as low as $6.36 from a two year high of $70.77, a decline of 91%.
+The management team is looking to us to provide analysis and guidance on the following:
+
+1.	Obtain and start to analyze data about the energy market both for Electricity and Natural Gas.
+2.	Determine the impact of essential metals & energy prices on infrastructure, specifically copper.
+3.	Generate economic scenarios in the new markets based on potential risks.
+
+### Key Business Questions
+
+The key business decision for our us to address are:
+
+1.	How would the performance of these commodities affect the size and timing of when we procure them?
+
+2.	How would we manage the allocation of existing resources to minimize further losses and return value back to shareholders?
+
+3.	How would the liability of the wildfires affect future investments in infrastructure?
+
+4.	How would the value of the energy market affect the price of electricity to customers?
+
+5.	How best to allocate resources given the scalability of customers served by PG&E?
+
+
+
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### CNBC 11/14/18
+
+**Pacific Gas & Electric stock price tumbles ahead of lawsuit by California fire victims**
+
+"If the Utility's equipment is determined to be the cause, the Utility could be subject to significant liability inexcess of insurance coverage," the company said in document filed with the SEC, which was obtained by CNBC.
+
+By Corky Siemaszko
+
+The admission by California's biggest power company that it may be to blame for at least one of the
+deadly fires ravaging the state sent company stock prices tumbling Wednesday by as much as 30
+percent.
+
+Meanwhile, Pacific Gas & Electric on Wednesday was also hit with the first of what's likely to be
+many lawsuits alleging that the infernos were the result of negligence and that the utility was more
+interested in boosting profits and salaries than investing in infrastructure.
+
+"PG&E's safety record is an abomination," the suit states.
+
+PG&E stocks were trading at $47.80 a share on Nov. 8, the day that the blazes broke out. The value
+of utility's shares were about $25 on Wednesday. The stock closed at 25.59, down 21.79 percent at
+the bell, according to CNBC.
+
+The steep decline on Wall Street came after PG&E admitted in a document filed Tuesday with the
+Securities and Exchange Commission that its equipment may have sparked the Camp Fire that's
+burning in Northern California - and that they might not have enough insurance to cover the
+expected cost of the damage.
+
+"While the cause of the Camp Fire is still under investigation, if the Utility's equipment is
+determined to be the cause, the Utility could be subject to significant liability in excess of insurance
+coverage," the company said in the document, which was obtained by CNBC.
+
+That would "have a material impact on PG&E Corporation's and the Utility's financial condition,
+results of operations, liquidity, and cash flows."
+
+Not long after that, a trio of law firms who refer to themselves as the Northern California Fire
+Lawyers filed suit Tuesday in San Francisco County Superior Court alleging that PG&E failed to
+properly maintain, repair and replace its equipment and that "its inexcusable behavior contributed
+to the cause of the 'Camp Fire.'"
+
+"Rather than spend the money it obtains from customers for infrastructure maintenance and safety,
+PG&E funnels this funding to boost its own corporate profits and compensation," the suit states.
+"This pattern and practice of favoring profits over having a solid and well-maintained infrastructure
+that would be safe and dependable for years to come left PG&E vulnerable to an increased risk of a
+catastrophic event such as the Camp Fire."
+
+Before that blaze broke out, PG&E warned customers it might turn off power in some areas because
+of the high risk of igniting a wildfire.
+
+"Despite its own recognition of these impending hazardous conditions, on the day of the Camp
+Fire's ignition, PG&E ultimately made the decision not to proceed with its plans for a power shutoff,"
+the lawsuit states.
+
+The three major wildfires have claimed at least 59 lives, and 56 of those fatalities were reported at
+the Camp Fire, officials said. More than 237,000 acres have been consumed by the blazes, and virtually the entire town of Paradise, California, was reduced to ashes.
+
+In anticipation of the expected lawsuits, PG&E has already drawn down $3 billion from its credit
+line, CNBC reported. But even before the admission, the utility was taking steps to protect itself.
+CEO Geisha Williams told stock holders on Nov. 5 that she would once again try to change a state
+policy called "inverse condemnation," which holds utilities responsible for any damage done by
+their equipment even if they have done nothing intentionally wrong.
+
+PG&E is still dealing with 200 or so lawsuits from the deadly 2017 wildfires.
+
+The California Department of Forestry and Fire Protection blamed PG&E equipment for starting at
+least 16 of those fires, which could cost the utility up to an estimate $15 billion in damages.
+
+### EBT 12/03/18
+
+**What happens if PG&E goes bankrupt?**
+
+By Judy Lin and CALmatters
+
+Investigators are massing. Lawsuits are mounting. The death toll in Butte County's historic Camp Fire stands at 88, so far.
+
+Another year, another megafire, another calamity in which faulty Pacific Gas and Electric equipment is a prime suspect. And once again, Californians face a familiar question: What's going to happen to the behemoth power company in the thick of the fire zone?
+
+It's a concern not just for PG&E-one of the largest utilities in the nation-but also for utilities and their customers throughout California. State laws make power companies especially liable for fires sparked by and around their equipment, and California's fire season is year-round now, thanks to global warming.
+
+Just this month, Southern California ratepayers sued Southern California Edison for damage from the Woolsey Fire in Ventura County. And earlier this year, the Legislature passed a special wildfire bill to help PG&E spread the costs of its potential liability in 17 Northern California wildfires last year.
+
+Now comes the Camp Fire, which sent PG&E stock whipsawing this month after evidence of an equipment malfunction near the fire's point of origin sparked fears the company's liability won't be covered by its insurance. Investors were so panicky that Public Utilities Commission President Michael Picker had to step in, pointedly announcing that PG&E's financial stability was crucial to making the utilities' equipment safer. Pasadena Democratic Assemblyman Chris Holden even raised the possibility that the Legislature will intervene a second time to help California utilities cope with wildfire expenses.
+
+But the century-old PG&E-which employs 20,000 workers and is slated to play an integral role in California's clean energy future-also has a checkered history and little goodwill to spare with the public. On Thursday, the PUC launched an investigation into the utility's safety record and corporate structure, as Bay Area residents shouted, protested and urged commissioners not to give them a bailout.
+
+What if Sacramento lacks the political appetite to bail out the soulless corporation in "Erin Brockovich" and the negligent villain that was found guilty in the 2010 San Bruno pipeline explosion?
+
+Let's look at what could happen if PG&E, which provides natural gas and electricity to 16 million people in northern and central California, seeks debt restructuring in the aftermath of the deadliest blaze in state history.
+
+**What happens under reorganization?**
+
+According to Sacramento-based bankruptcy attorney Steven Felderstein, PG&E would most likely continue with business operations. This means the lights would stay on and utility workers would keep working. But a Chapter 11 filing would allow PG&E to propose a reorganization plan to reduce expenses and free up assets.
+
+Felderstein, who has represented state agencies in bankruptcy courts around the country, said a judge is usually assigned to mediate to get most, if not all, parties to a consensus. The bankruptcy court would then confirm that the plan is feasible, made in good faith and in the best interest of creditors. PG&E would have four months to file a reorganization plan but could get an extension.
+
+Bankruptcy could affect wildfire victims seeking damages because the filing triggers a stay on lawsuits against PG&E. Multiple victims of the Camp Fire have already sued PG&E alleging negligence and health and safety code violations by the utility. That comes on the heels of dozens of lawsuits related to fires in 2017.
+
+"They can ultimately have their claim determined outside of the bankruptcy court, but it still is a claim of the bankruptcy," Felderstein said. "So if the creditors only end up getting paid a percentage of the amount they are owed, then that would affect the injured parties as well."
+
+If wildfire victims aren't happy with the reorganization, it could be that their claims are so large that they can veto the plan. "It isn't for sure that they'd be able to stop a plan, but obviously there'd be a chance that they could," Felderstein said.
+
+**"Ultimately, the customers pay"**
+
+Michael Wara, director of the Climate and Energy Policy Program at Stanford University, says the state shouldn't allow PG&E to go bankrupt because it would be expensive for ratepayers to pay back that debt. As it is, the utility already has sought permission from U.S. energy regulators for a 9.5 percent increase in transmission charges due to the higher risk of wildfires. PG&E says that translates to an increase of $1.50 per month for the average residential customer.
+
+"Ultimately, the customers pay," he said.
+
+That was the case when PG&E filed for bankruptcy during California's power crisis.
+
+PG&E filed for Chapter 11 on April 6, 2001, when the state was hit with rolling blackouts and market price manipulation. According to the Associated Press, "PG&E, based in San Francisco, began its bankruptcy odyssey with more than $12 billion in debt that piled up as the cost of wholesale electricity soared beyond the retail prices established under a state power deregulation plan introduced in 1998."
+
+Although the filing did not trigger layoffs, the AP noted that ratepayers were stuck with paying back the bills for years and years. At the time, the rehabilitation was expected to cost customers $6.2 billion to $8.2 billion in above-market prices through 2012. That worked out to about $1,300 to $1,700 per customer.
+
+Loretta Lynch, who was president of PUC when PG&E filed for bankruptcy, said she'd be suspicious about PG&E's motives if the company were to seek a reorganization. Lynch said the utility's bankruptcy filing was a strategic choice after failing to escape state regulation and that the company did not really need a lifeline.
+
+"Consumers should be on high alert," she said
+
+Investors also lost. At that time, shareholders lost out on about $1.7 billion in dividends. PG&E already suspended dividends in 2017 in response to deadly blazes in California's wine country.
+
+**Worry about workers and the environment**
+
+Wara says there are other reasons state leaders shouldn't allow PG&E to reorganize in court. One is that utility workers could risk their pensions. Under bankruptcy, a company can seek to modify labor agreements.
+
+Under last year's wildfire bill, lawmakers sought to give PG&E's workers some protection if PG&E filed for bankruptcy. SB 901 includes language that states the PUC will seek a plan that's "fair and reasonable to affected public utility employees, including both union and nonunion employees."
+
+Bankruptcy also makes it more difficult for the state to achieve its clean-energy goals. By 2045, the state wants 100 percent of electricity to be powered by renewable resources such as wind and solar, as well as zero-carbon energy sources such as nuclear power.
+
+"Vehicle electrification is going to require a ton of grid investments," Wara said. "If we have to put those grid investments on our credit card instead of getting a 30-year mortgage for them, we're going to be able to buy less."
+
+**Wait, why is PG&E in trouble?**
+
+The utility is potentially facing billions of dollars in damages as state authorities investigate PG&E equipment as a possible cause of the Camp Fire.
+
+PG&E says it believes the increase in wildfires in recent years is closely tied to global warming, the result of much drier conditions after recent droughts and hot weather. That means a fire can spark anywhere along thousands of miles of power lines that make up the electrical grid, creating a huge liability for the utility.
+
+"California is now experiencing the devastating impact of extreme weather and climate-driven natural disasters, including the massive wildfires that occurred in Northern and Southern California in 2017, and the largest wildfires in California's history during 2018," the company wrote to federal regulators on Oct. 1. "Extreme weather is no longer a theoretical issue, it has become the new normal."
+
+After PG&E reported an outage and damage to a transmission tower in the area where the Camp Fire started, the company disclosed that it had borrowed more than $3 billion under available credit lines, bringing total cash on hand to more than $3.4 billion from just $440 million at the end of September. Those moves have sent PG&E stocks and bonds down on worries the utility can't meet potential liabilities.
+
+Citigroup analyst Praful Mehta estimates damages from the Camp Fire may reach as much as $15 billion. By comparison, PG&E stock has lost nearly half its market value since the blaze, from $25 billion to $12 billion.
+
+PG&E says it's uncertain the utility will be liable for any of the damages because the cause of the fire remains under investigation. "It is still very much uncertain what the potential liability could be, if any," said spokeswoman Lynsey Paulo.
+
+PUC president Michael Picker said he can't imagine allowing the utility to go bankrupt but he didn't rule out the possibility of a break up. "It's not good policy to have utilities unable to finance the services and infrastructure the state of California needs," Picker said.
+
+Earlier this year, the Legislature made it easier for utility companies to absorb the cost of fire damages by borrowing from the state and charging customers to pay back the bonds over many years. If PG&E were to go bankrupt, it's unlikely the state would be out any money because customers are on the hook for the bonds. So far, no state-authorized bonds have been issued. The controversial bill, SB 901, covers fires that burned in 2017 and those that start in 2019, but not any for 2018.
+While Assemblyman Holden plans to introduce a bill that could expand last year's legislation to cover this year, it appeared unlikely to change rules that automatically hold the companies responsible for any fire damage tied to their equipment, a practice known as inverse condemnation.
+
+Sen. Jerry Hill, D-San Mateo, who has been a critic of PG&E, said he's opposed to any bailout. "I don't want them to go bankrupt either," Hill recently told CALmatters, "but that may be the only way that we can have a safe utility."
+
+### WaPo 01/14/19
+
+**PG&E to file for bankruptcy following devastating California wildfires**
+
+Company blames liabilities, reconstruction costs and 'increase in wildfire risk resulting from climate change'
+
+By Hamza Shaban and Steven Mufson
+
+California's largest power company intends to file for bankruptcy as it faces tens of billions of dollars in potential liability after massive wildfires devastated parts of the state over the past two years, according to a filing with the Securities and Exchange Commission.
+
+Pacific Gas and Electric said Monday that declaring insolvency is "ultimately the only viable option to restore PG&E's financial stability to fund ongoing operations and provide safe service to customers."
+
+The California wildfires, which have killed dozens of people and destroyed thousands of homes, have led to a surge in insurance claims. PG&E estimates that it could be held liable for more than $30 billion, according to the SEC filing, not including potential punitive damages, fines or damages tied to future claims. The company's wildfire insurance for 2018 was $1.4 billion.
+
+The PG&E bankruptcy promises to be more complex and political than most bankruptcies, pitting fire victims, ratepayers, bankers, insurance companies and renewable-energy providers against one another. Homeowners with property insurance will collect from their insurers, and a person familiar with the bankruptcy planning said that hedge funds are already offering to buy settlement claims from
+insurance companies.
+
+One casualty of a bankruptcy could be billions of dollars of funding for clean-energy initiatives designed to fight the effects of climate change, Ralph Cavanagh, a California-based energy expert at the Natural Resources Defense Council (NRDC), said in an email. "PG&E is the state's largest investor in energy efficiency and electric vehicle infrastructure alone, with annual commitments well in excess of $1
+billion," he said. "Other threatened initiatives involve grid upgrades, small-scale 'distributed' resources and technology innovation."
+
+Solar and wind-energy providers are among those who could suffer. In its drive to make the state electricity grid free from carbon dioxide emissions, California has pushed utilities to buy renewable energy. Gabe Grosberg, a utilities analyst at S&P Global, said Monday that "many of the power contracts are above market price" and that a renegotiation of those contracts "is something the bankruptcy judge will take a look at."
+
+The company said financial alternatives to bankruptcy would not serve the best interests of PG&E and its shareholders and "would not address the fundamental issues and challenges PG&E faces." Among the many considerations that pushed the company closer to bankruptcy were the need to resolve its potential liabilities, extensive rebuilding efforts and "the significant increase in wildfire risk resulting
+from climate change," PG&E said.
+
+PG&E's shares plummeted Monday, and closed at $8.38 a share, down 52 percent. The filing comes a day after the company announced the resignation of its chief executive, Geisha Williams. Williams, three other top executives who resigned last week and the company have come under harsh criticism in recent weeks over the utility's corporate culture. The president of the California Public Utilities
+Commission had in November widened his investigation of PG&E to include its "safety culture" more generally.
+
+"In our opinion, PG&E has significant organizational and leadership problems that have eroded the utility's trust capital in Sacramento," the investment advisory firm Height Securities said in a note at the time.
+
+The company was already on federal probation as a result of a 2010 natural-gas pipeline explosion in San Bruno, Calif., that exposed violations of the Natural Gas Act and led to obstruction-of-justice charges. The five-year probation period runs through this year.
+
+PG&E said it was required to give employees at least 15 days' notice before it filed for bankruptcy, which it plans to do "on or about" Jan. 29.
+
+PG&E said that, as of last week, it had about $1.5 billion in "cash or cash equivalents on hand" and was in discussions with "a number of major banks" to secure more than $5 billion to fund its ongoing operations as it seeks bankruptcy protection. As a regulated utility, PG&E has appealed to the California Public Utilities Commission for higher gas and electric rates to recover costs. And the company has
+appealed to the California state legislature for protection, asking it to cap liabilities stemming from the fires.
+
+Few politicians want to rush to the defense of a big utility, but many policy experts argue that PG&E wouldn't be in this position if it weren't for a unique California legal standard that makes utilities strictly liable for damages from wildfires linked to their equipment, even if the utilities were not negligent or unreasonable.
+
+"The report of PG&E's likely bankruptcy is deeply concerning news for the state, fire victims, and ratepayers," California State Assembly member Chris Holden (D) said in a statement. "We don't want to see the victims victimized again." Holden, who has been an ally of PG&E, said he would work with the legislature and the state's new governor, Gavin Newsom (D), on how to protect fire victims and ratepayers.
+
+Newsom issued a statement saying that he would seek "a solution that ensures consumers have access to safe, affordable and reliable service, fire victims are treated fairly, and California can continue to make progress toward our climate goals." He said the utility should "honor promises made to energy suppliers and to our community."
+
+Energy suppliers and the community, however, will join others with unsecured claims. Much of the power over how much they receive depends on how much higher the California Public Utilities Commission is willing to raise rates, PG&E's revenue source.
+
+PG&E, formed more than a century ago, has been blamed for dozens of major California fires that have started when trees have fallen on power lines, sending sparks onto dry grass or other trees. In response in May to a report by the California Department of Forestry and Fire Protection (Cal Fire) regarding October 2017 blazes, PG&E said it prunes or removes about 1.4 million trees a year in an effort to
+prevent such fires.
+
+The company, which serves about 5.4 million electricity customers and 4.5 million natural-gas customers, also blamed changing weather for exacerbating the task of preventing fires. "Years of drought, extreme heat and 129 million dead trees have created a 'new normal' for our state," the company said.
+
+Moody's investor rating service warned Nov. 15 that the potential liability of 21 major wildfires in 2017 was roughly $10 billion and that the destructive 2018 Camp Fire, which devastated the town of Paradise, Calif., and killed 86 people, would add further costs. PG&E said the cause of that fire was still under investigation, but CalFire is focusing on several of the utility's transmission lines and towers.
+
+The 2018 fires have compounded concerns about the viability of the company. Its stock has plunged about 80 percent since early November, wiping out about $19 billion of market value.
+
+S&P Global's Grosberg said that PG&E's ratings were slashed as "public anger" spread after the Camp Fire, with protesters demonstrating outside a regulatory hearing in late November and in front of PG&E's headquarters in early December.
+
+"All Californians sympathize deeply with the victims of our recent catastrophes, which caused dozens of deaths and wreaked unprecedented destruction across the state," the NRDC's Cavanagh said. "But victims' interests won't be served by pushing utilities into bankruptcy, converting wildfire sufferers into one more class of frustrated creditors pursuing inadequate funds."
+
+### LAT 02/14/19
+
+**PG&E should get out of the energy sales business, local governments say**
+
+by Sammy Roth
+
+A coalition of Northern California cities and counties is calling for state officials to remove Pacific Gas & Electric from the business of buying and selling electricity, which they say would allow the troubled company to focus on the safety of its poles and wires and reduce the risk of deadly fires.
+
+The local governments pushing that concept have already formed their own energy providers, called community choice aggregators, or CCAs. There are a dozen CCAs serving customers in PG&E's service territory, collectively filling nearly half the electricity demand on the investor-owned utility's power grid.
+
+PG&E filed for bankruptcy protection last month, saying it would be unable to withstand tens of billions of dollars in potential liabilities from fires sparked by the utility's electrical infrastructure. The company's future is a giant question mark as state officials and a bankruptcy court judge - and another judge overseeing PG&E's criminal probation for a deadly gas explosion - scramble to find ways to stop more fires from breaking out, while continuing to provide reliable electricity to the 5.4 million homes and businesses served by PG&E.
+
+Now CCAs are wading into the debate.
+
+In a filing to the California Public Utilities Commission on Wednesday, the city of San Jose and six other local energy providers said regulators should "focus the entirety of PG&E's attention and resources on planning, operating and improving its electric transmission and distribution systems through investments that serve the mission to deliver electricity safely and reliably." Relieving the company of its responsibility to buy and sell electricity, the CCAs wrote, would "remove any distractions as PG&E ... works to make its facilities safer."
+
+Officials at the San Francisco-based power company are open to the idea.
+
+In its own filing to the Public Utilities Commission on Wednesday, PG&E said it "supports consideration" of the idea of becoming a wires-only company, which was floated by the commission as part of an investigation into PG&E's safety culture. Implementing that plan would enable PG&E to offload power plants that carry their own risks, the company said, including the Diablo Canyon nuclear plant, which is slated to close in 2025.
+
+"The potential benefit of a wires-only company would be that, by reducing the total number of risks managed by PG&E, it could lead to better management of the remaining risks," the company wrote in its filing.
+
+From a business perspective, the idea of a monopoly utility company giving up its role as a power broker isn't as crazy as it might sound. California's investor-owned utilities don't actually profit from energy sales - they're allowed to charge customers only what they paid for electricity on the market. Instead, they earn a regulated profit when they invest in infrastructure, including the poles and wires of the electric grid.
+
+In fact, San Diego Gas & Electric - the state's third-largest private utility, after PG&E and Southern California Edison - has been asking state lawmakers for a bill that would allow it to become a poles-and-wires company exclusively, after the city of San Diego's announcement last year that it would seek to form a CCA.
+
+### History speaks
+
+- We will develop the *value at risk* and *expected shortfall* metrics from the historical simulated distributions of risk factors.
+- Given these factors we will combine them into a portfolio and calculate their losses. 
+- With the loss distribution in hand we can compute the risk measures. - This approach is nonparametric.
+
+- We can then posit high quantile thresholds and explore risk measures the in the tails of the distributions.
+
+First we set the tolerance level $\Large\alpha$, for example, equal to 95\%. This would mean that a decision maker would not tolerate loss in  more than $\Large 1-\alpha$, or 5\%. of all risk scenarios under consideration.
+
+We define the VaR as the quantile for probability $\Large\alpha \in (0,1)$, as
+
+$$
+\Large
+VaR_{\alpha} (X) = inf \{ x \in R: F(x) \geq \alpha \},
+$$
+
+which means find the greatest lower bound of loss $\Large x$ (what the symbol $\Large inf$ = _infimum_ means in English), such that the cumulative probability of $\Large x$ is greater than or equal to $\Large \alpha$. 
+
+Using the $\Large VaR_{\alpha}$ definition we can also define $\Large ES$ as
+
+$$
+\Large
+ES_{\alpha} = E [X \lvert X \geq VaR_{\alpha}],
+$$
+
+where $\Large ES$ is "expected shortfall" and $\Large E$ is the expectation operator, also known as the "mean." Again, in English, the expected shortfall is the average of all losses greater than the loss at a $\Large VaR$ associated with probability $\Large \alpha$, and $\Large ES \geq VaR$.
+
+
+Approach
+-----------------------------------------------------------------------
+### PG&E
+
+Pacific Gas and Electric Company, incorporated in California in 1905, is one of the largest combined natural gas and electric energy companies in the United States. Based in San Francisco, the company is a subsidiary of PG&E CorporationOpens in new Window..
+
+There are approximately 24,000 employees who carry out Pacific Gas and Electric Company's primary business-the transmission and delivery of energy. The company provides natural gas and electric service to approximately 16 million people throughout a 70,000-square-mile service area in northern and central California.
+
+Pacific Gas and Electric Company and other energy companies in the state are regulated by the California Public Utilities CommissionOpens in new Window.. The CPUC was created by the state Legislature in 1911.
+
+### Electricity
+
+The California Independent System Operator (CAISO) operates a competitive wholesale electricity market and manages the reliability of its transmission grid. CAISO provides open access to the transmission and performs long-term planning. In managing the grid, CAISO centrally dispatches generation and coordinates the movement of wholesale electricity in California and a portion of Nevada. CAISOs markets include energy (day-ahead and real-time), ancillary services, and congestion revenue rights. CAISO also operates an Energy Imbalance Market (EIM), which currently includes CAISO and other balancing authority areas in the western United States.
+
+CAISO was founded in 1998 and became a fully functioning ISO in 2008. The Energy Imbalance Market launched in 2014 with PacifiCorp as the first member or EIM Entity. The EIM serves parts of Arizona, Oregon, Nevada, Washington, California, Utah, Wyoming and Idaho.
+
+### Natural Gas
+
+Natural gas supplies 22% of the energy used worldwide, and makes up nearly a quarter of electricity generation, as well as playing a crucial role as a feedstock for industry. Natural gas is a versatile fuel and its growth is linked in part to its environmental benefits relative to other fossil fuels, particularly for air quality as well as greenhouse gas emissions.
+
+The natural gas market is becoming more globalized, driven by the availability of shale gas and the rising supplies of liquefied natural gas. As gas trade increases, so do the concerns about natural gas security, as a demand or supply shock in one region may now have repercussions in others.
+
+### Copper
+
+Copper is one of the most widely used metals found on planet Earth. The shiny, reddish-orange element is believed to be the first metal used by humans thousands of years ago. In modern society, copper plays a vital role in everyday life. Its physical properties, which are similar to gold and silver, make it perfectly suited for a range of industrial uses including electric wiring, plumbing, roofing and industrial machinery. Copper is soft, pliable and malleable, and it conducts heat and electricity very well. However, unlike gold and silver, copper is not widely viewed as a currency. Therefore, copper costs far less than precious metals. The global supply of copper comes principally from underground mines and from recycling copper products.
+
+Copper is soft, pliable and malleable, and it conducts heat and electricity very well. However, unlike gold and silver, copper is not widely viewed as a currency. Therefore, copper costs far less than precious metals.
+
+The global supply of copper comes principally from underground mines and from recycling copper products.
+
+
+Data
+=======================================================================
+
+Row {data-height=315}
+-----------------------------------------------------------------------
+
+### Data Definitions
+
+Data and Markets
+
+- *Electric*: daily Electric price (\$/per metric ton)
+- *Copper*: daily copper prices (\$/per metric ton)
+- *Natural Gas*: daily Natural Gas prices (\$/per metric ton)
+- *5 YR T-bill*: daily T-bill prices (\$/per share)
+- *PG&E Stock Price*: daily stock prices (\$/per share)
+
+The data and analysis that we will use to make an informed decision are:
+
+- Electric Price: volatility and correlation
+- copper Price: volatility and correlation
+- Natural Gas Price: volatility and correlation
+- All together: correlations among these indicators
+
+### Historical Data April 15, 2014 to December 31, 2018
+
+- The three commodities (electricity, copper, and natural gas) appears cyclical. This can be attributed to the change in season.
+
+- The price of electricity is the most volatile of all three commodities. The most volatile years were 2017 and 2018. This can be attributed to the recent wildfires.
+
+- The stock price appears to have fallen the fall of 2017 and has continued to do so to the end of 2018. Again, this can be attributed to wildfire events.
+
+- Copper is the most stable of the three commodities, in terms of price and magnitude percentage change.
+
+- Natural gas less volatile than electricity but seen a higher level of volatility in 2018.
+
+Row 
+-----------------------------------------------------------------------
+
+### Commodities Percent Changes
+```{r, echo=FALSE}
+renderPlotly({
+  library(ggplot2)
+  #library(ggfortify)
+  library(plotly)
+  title.chg1 <- "Price Percent Changes"
+  #title.chg2 <- "Size of Metals Price Percent Changes"
+  p <- autoplot.zoo(data.xts[,1:5]) #+ ggtitle(title.chg1) #+ ylim(-5, 5)
+  ggplotly(p)
+})
+```
+
+### Size of Commoditites Price Percent Changes
+
+```{r, echo=FALSE}
+renderPlotly({
+  #title.chg1 <- "metals Price Percent Changes"
+  #title.chg2 <- "Size of metals Price Percent Changes"
+  p <- autoplot.zoo(abs(data.xts[,1:5])) # + ggtitle(title.chg2) #+ ylim(-5, 5)
+  ggplotly(p)
+  })
+```
+
+Row {data-height=350 .tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### Faceted Time Series
+```{r, echo=FALSE}
+renderPlotly({
+  library(ggplot2)
+  #library(ggfortify)
+  library(plotly)
+  title.chg1 <- "Time Series Price Changes"
+  #title.chg2 <- "Size of Metals Price Percent Changes"
+  p <- autoplot.zoo(ALL.rd[,1:5], facets = TRUE) + scale_color_manual(labels = c("elec", "copper", "NGas", "stock", "Tbill"), values=c("#7DF9FF", "#B87333", "#FFCE00", "#000000", "#808080")) #+ ggtitle(title.chg1) #+ ylim(-5, 5)
+  ggplotly(p)
+})
+```
+
+### Faceted Commodities Percent Changes
+```{r, echo=FALSE}
+renderPlotly({
+  library(ggplot2)
+  #library(ggfortify)
+  library(plotly)
+  title.chg1 <- "Price Percent Changes"
+  #title.chg2 <- "Size of Metals Price Percent Changes"
+  p <- autoplot.zoo(data.xts[,1:5], facets = TRUE) + scale_color_manual(labels = c("elec", "copper", "NGas", "stock", "Tbill"), values=c("#7DF9FF", "#B87333", "#FFCE00", "#000000", "#808080")) #+ ggtitle(title.chg1) #+ ylim(-5, 5)
+  ggplotly(p)
+})
+```
+
+### Faceted Size of Commoditites Price Percent Changes
+
+```{r, echo=FALSE}
+renderPlotly({
+  #title.chg1 <- "metals Price Percent Changes"
+  #title.chg2 <- "Size of metals Price Percent Changes"
+  p <- autoplot.zoo(abs(data.xts[,1:5]), facets = TRUE) + scale_color_manual(labels = c("elec", "copper", "NGas", "stock", "Tbill"), values=c("#7DF9FF", "#B87333", "#FFCE00", "#000000", "#808080")) # + ggtitle(title.chg2) #+ ylim(-5, 5)
+  ggplotly(p)
+  })
+```
+
+Correlation
+=======================================================================
+
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+**Narrative**
+
+The correlation between each asset are fairly weak with the strongest being a negative correlation of -0.28 between PG&E's stock price and Natural Gas despite it being one of the main utilities it provides. Electricity prices with the stock positively correlated with 0.13 which can justify the -0.02 correlation between electricity and natural gas.
+
+To better understand the scope of PG&E further analysis will focus on electricity and natural gas prices for products they provide and copper prices as a representation of infrastructure investment.
+
+According to the autocorrelated pairs panel there is minimal gains in the timing investments across all commodities. The autocorrelation between copper and natural gas shows some benefits in lag 5 days before and after the two commodities.
+
+In the partial autocorrelated pairs panel the benefits in lag timing heavily favors electricity & copper and electricity and natural gas that varies from up to 25 days.
+
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+### Correlation Matrix Plot
+```{r echo = FALSE}
+#Correlation Matrix
+dcor <- cor(data.r)
+#Plot correlation matrix
+corrplot(dcor)
+```
+
+### Detailed Correlation Matrix Plot
+```{r echo = FALSE}
+#Generate lighter palette
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+corrplot(dcor, method = "shade", shade.col = NA, tl.col = "black", tl.srt = 45,
+col = col(200), addCoef.col = "black", cl.pos = "n", order = "AOE")
+```
+
+### Autocorrelation Pairs Panel
+```{r echo = FALSE}
+par(mfrow = c(2, 1))
+acf(ts(ALL.r[, c(-4, -5)]))
+```
+
+### Partial Autocorrelation Pairs Panel
+```{r echo = FALSE}
+#Generate lighter palette
+par(mfrow = c(2, 1))
+pacf(ts(ALL.r[, c(-4, -5)]))
+```
+
+
+Exploratory Analysis
+=======================================================================
+
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+A quantile divides the returns distribution into two groups. For example 75\% of all returns may fall below a return value of 10\%. The distribution is thus divided into returns above 10\% and below 10\% at the 75\% quantile.
+
+Pull slide to the right to measure the risk of returns at desired quantile levels. The minimum risk quantile is 75\%. The maximum risk quantile is 99\%.
+
+
+```{r, echo=FALSE}
+sliderInput("alpha.q", label = "Risk Measure quantiles (%):",
+            min = 0.75, max = 0.99, value = 0.75, step = 0.01)
+```
+
+
+Row
+-----------------------------------------------------------------------
+
+### Electric Value at Risk
+
+```{r, echo=FALSE}
+#threshold <- reactive({input$threshold.q}) #BE SURE that {} included 
+renderValueBox({
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  returns1 <- returns[,1]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df below
+  q <- quantile(returns1,alpha())
+  VaR.hist <- q
+  valueBox(round(VaR.hist, 2),
+           icon = "fa-bolt", color = "#7DF9FF")
+})
+```
+
+### Copper Value at Risk
+
+```{r, echo=FALSE}
+#threshold <- reactive({input$threshold.q}) #BE SURE that {} included 
+renderValueBox({
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  returns1 <- returns[,2]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df below
+  q <- quantile(returns1,alpha())
+  VaR.hist <- q
+  valueBox(round(VaR.hist, 2),
+           icon = "fa-certificate", color = "#B87333")
+})
+```
+
+### Natural Gas Value at Risk
+
+```{r, echo=FALSE}
+#threshold <- reactive({input$threshold.q}) #BE SURE that {} included 
+renderValueBox({
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  returns1 <- returns[,3]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df below
+  q <- quantile(returns1,alpha())
+  VaR.hist <- q
+  valueBox(round(VaR.hist, 2),
+           icon = "fa-burn", color = "#FFCE00")
+})
+```
+
+Row {data-height=120}
+-----------------------------------------------------------------------
+
+### Statistics
+```{r, echo=FALSE}
+## data_moments function
+## INPUTS: r vector
+## OUTPUTS: list of scalars (mean, sd, median, skewness, kurtosis)
+data_moments <- function(data){
+  library(moments)
+  library(matrixStats)
+  mean.r <- colMeans(data)
+  median.r <- colMedians(data)
+  sd.r <- colSds(data)
+  IQR.r <- colIQRs(data)
+  skewness.r <- skewness(data)
+  kurtosis.r <- kurtosis(data)
+  result <- data.frame(mean = mean.r, median = median.r, std_dev = sd.r, IQR = IQR.r, skewness = skewness.r, kurtosis = kurtosis.r)
+  return(result)
+}
+# Run data_moments()
+answer <- data_moments(data.xts[, 1:3])
+# Build pretty table
+answer <- round(answer, 4)
+knitr::kable(answer)
+```
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### Electric Returns Distribution
+
+```{r, echo=FALSE}
+renderPlotly({
+  returns1 <- returns[,1]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df
+  returns1.df <- data.frame(Returns = returns1[,1], Distribution = rep("Historical", each = length(returns1)))
+  
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  
+  # Value at Risk
+  VaR.hist <- quantile(returns1,alpha())
+  VaR.text <- paste("Value at Risk =", round(VaR.hist, 2))
+  
+  # Determine the max y value of the desity plot.
+  # This will be used to place the text above the plot
+  VaR.y <- max(density(returns1.df$Returns)$y)
+  
+  # Expected Shortfall
+  ES.hist <- median(returns1[returns1 > VaR.hist])
+  ES.text <- paste("Expected Shortfall =", round(ES.hist, 2))
+  
+  p <- ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + 
+    geom_density(alpha = 0.5) + 
+    geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "firebrick1") + 
+    geom_vline(aes(xintercept = ES.hist), size = 1, color = "firebrick1") +
+    annotate("text", x = 2+ VaR.hist, y = VaR.y*1.05, label = VaR.text) +
+    annotate("text", x = 1.5+ ES.hist, y = VaR.y*1.1, label = ES.text) +     scale_fill_manual( values = "#7DF9FF")
+  ggplotly(p)
+  })
+```
+
+###  Copper Returns Distribution
+
+```{r, echo=FALSE}
+renderPlotly({
+  returns1 <- returns[,2]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df
+  returns1.df <- data.frame(Returns = returns1[,1], Distribution = rep("Historical", each = length(returns1)))
+  
+alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  
+  # Value at Risk
+  VaR.hist <- quantile(returns1,alpha())
+  VaR.text <- paste("Value at Risk =", round(VaR.hist, 2))
+  
+  # Determine the max y value of the desity plot.
+  # This will be used to place the text above the plot
+  VaR.y <- max(density(returns1.df$Returns)$y)
+  
+  # Expected Shortfall
+  ES.hist <- median(returns1[returns1 > VaR.hist])
+  ES.text <- paste("Expected Shortfall =", round(ES.hist, 2))
+  
+  p <- ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + 
+    geom_density(alpha = 0.5) + 
+    geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "firebrick1") + 
+    geom_vline(aes(xintercept = ES.hist), size = 1, color = "firebrick1") +
+    annotate("text", x = 2+VaR.hist, y = VaR.y*1.05, label = VaR.text) +
+    annotate("text", x = 1.5+ES.hist, y = VaR.y*1.1, label = ES.text)+     scale_fill_manual( values = "#B87333")
+  ggplotly(p)
+})
+```
+
+### Natural Gas Returns Distribution
+
+```{r, echo=FALSE}
+renderPlotly({
+  returns1 <- returns[,3]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df
+  returns1.df <- data.frame(Returns = returns1[,1], Distribution = rep("Historical", each = length(returns1)))
+  ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + geom_density(alpha = 0.8)
+  
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  
+  # Value at Risk
+  VaR.hist <- quantile(returns1,alpha())
+  VaR.text <- paste("Value at Risk =", round(VaR.hist, 2))
+  
+  # Determine the max y value of the desity plot.
+  # This will be used to place the text above the plot
+  VaR.y <- max(density(returns1.df$Returns)$y)
+  
+  # Expected Shortfall
+  ES.hist <- median(returns1[returns1 > VaR.hist])
+  ES.text <- paste("Expected Shortfall =", round(ES.hist, 2))
+  
+  p <- ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + 
+    geom_density(alpha = 0.5) + 
+    geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "firebrick1") + 
+    geom_vline(aes(xintercept = ES.hist), size = 1, color = "firebrick1") +
+    annotate("text", x = 2+VaR.hist, y = VaR.y*1.05, label = VaR.text) +
+    annotate("text", x = 1.5+ES.hist, y = VaR.y*1.1, label = ES.text) +     scale_fill_manual( values = "#FFCE00")
+  ggplotly(p)
+})
+
+```
+
+### 
+```{r, echo=FALSE}
+renderPlotly({
+  acf(coredata(data.xts[,1:3])) # returns
+})
+```
+
+```{r, echo=FALSE}
+renderPlotly({
+  acf(coredata(data.xts[,4:5])) # sizes
+})
+```
+
+
+Market Risk
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+
+### Electric, Copper, Natural Gas Observations
+
+- The price of electricity is negatively correlated with the price of copper (-0.25) which is expected. As the demand for electricity increases, capacity to generate electricity decreases, which leads to a price increase. At the same time, demand for copper increases which leads to a decrease in price. More copper is needed to support the supply of more electricity (e.g. cabling).
+
+- On the other hand, the price of electricity is positively correlated with the price of natural gas (0.22). This intuitive since both commodity prices would rise during the cold months and fall during the hot months.
+
+- Lastly, the price of natural gas and copper shows a stronger positive correlation (0.54). This is expected since more copper is needed to support the supply of natural gas. As the demand of natural gas rises, so would the demand for more copper. Additionally, capacity to generate natural gas is unlikely to run into capacity issues like electricity, since demand for natural gas is much less volatile. 
+ 
+
+
+### Electric, Copper, Natural Gas relationships
+
+```{r, echo=FALSE}
+#library(psych)
+pairs.panels(corr.returns.df[,2:4])
+```
+
+
+row {.tabset }
+-----------------------------------------------------------------------
+
+### Electric and Copper (90 day rolling correlation)
+
+```{r, echo=FALSE}
+renderPlotly({
+  p <- ggplot(corr.returns.df, aes(x = Date, y = elec.copper)) + geom_line()
+  ggplotly(p)
+})
+```
+
+### Electric and Natural Gas (90 day rolling correlation)
+
+```{r, echo=FALSE}
+renderPlotly({
+  p <- ggplot(corr.returns.df, aes(x = Date, y = elec.NGas)) + geom_line()
+  ggplotly(p)
+})
+```
+
+### Copper and Natural Gas (90 day rolling correlation)
+
+```{r, echo=FALSE}
+renderPlotly({
+  p <- ggplot(corr.returns.df, aes(x = Date, y = copper.NGas)) + geom_line()
+  ggplotly(p)
+})
+```
+
+### 30 day within-sample correlations and volatilities
+
+```{r, echo=FALSE}
+plot.zoo(R.corr.vols[, c(-4, -5)], main= "Monthly Correlations and Volatilities")
+```
+
+### Electric - Copper Dependency
+
+```{r, echo=FALSE}
+renderPlot({ 
+  plot(summary(fit.rq.elec.copper), parm = "copper.vols", main = "elec-copper correlation sensitivity to copper volatility")
+})
+```
+
+- Assume that the loss density $\Large f_L$ is strictly positive so that the distribution function of loss possesses a diffentiable inverse and change variables so that $\Large v = q_u(L) = F_L(u)$ the cumulative loss distribution. Then 
+
+$$
+\Large
+\frac{dv}{du} = f^{-1}(v)
+$$
+and we can compute
+$$
+\Large
+\frac{\partial r_{ES}^{\alpha}}{\partial \lambda_i}(1) = \frac{1}{1-\alpha}\int_{q_{\alpha}(L)}^{\infty}E(L_i | L=v)f_L(v)dv = \frac{1}{1-\alpha}\int_{\alpha}^1E(L_i \, | \, L \geq q_{\alpha}(L))
+$$
+- (Finally) we have the expected shortfall contribution of a line of business $\Large i$ as
+$$
+\Large
+C_i^{ES} = E(L_i | L \geq VaR_{\alpha}(L))
+$$
+
+### Empirical Loss
+
+```{r, echo=FALSE}
+## Now for Loss Analysis
+# Get last prices
+price.last <- as.numeric(tail(data[, c(-1, -5, -6)], n=1))
+# Specify the positions
+position.rf <- c(1/3, 1/3, 1/3)
+# And compute the position weights
+w <- position.rf * price.last
+# Fan these  the length and breadth of the risk factor series
+weights.rf <- matrix(w, nrow=nrow(data.r), ncol=ncol(data.r), byrow=TRUE)
+#head(rowSums((exp(data.r/100)-1)*weights.rf), n=3)
+## We need to compute exp(x) - 1 for very small x: expm1 accomplishes this
+#head(rowSums((exp(data.r/100)-1)*weights.rf), n=4)
+loss.rf <- -rowSums(expm1(data.r/100) * weights.rf)
+loss.rf.df <- data.frame(Loss = loss.rf, Distribution = rep("Historical", each = length(loss.rf)))
+## Simple Value at Risk and Expected Shortfall
+alpha.tolerance <- .95
+VaR.hist <- quantile(loss.rf, probs=alpha.tolerance, names=FALSE)
+## Just as simple Expected shortfall
+ES.hist <- median(loss.rf[loss.rf > VaR.hist])
+VaR.text <- paste("Value at Risk =\n", round(VaR.hist, 2)) # ="VaR"&c12
+ES.text <- paste("Expected Shortfall \n=", round(ES.hist, 2))
+title.text <- paste(round(alpha.tolerance*100, 0), "% Loss Limits")
+renderPlotly({
+  p <- ggplot(loss.rf.df, aes(x = Loss, fill = Distribution)) + geom_histogram(alpha = 0.8) + geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "blue") + geom_vline(aes(xintercept = ES.hist), size = 1, color = "blue") + annotate("text", x = VaR.hist, y = 150, label = VaR.text) + annotate("text", x = ES.hist, y = 100, label = ES.text) + xlim(0, 20) + ggtitle(title.text)
+  ggplotly(p)
+})
+```
+
+Extremes
+=======================================================================
+Row {.tabset}
+-----------------------------------------------------------------------
+### Let's go to extremes
+
+- All along we have been stylizing financial returns, commodities and exchange rates, as skewed and with thick tails.
+- We next go on to an extreme tail distribution called the Generalized Pareto Distribution (GPD). 
+- For very high thresholds, GPD not only well describes behavior in excess of the threshold, but the mean excess over the threshold is linear in the threshold. 
+- From this we get more intuition around the use of expected shortfall as a coherent risk measure. 
+- In recent years we well exceeded all Gaussian and Student's t thresholds.
+
+For a random variate $\Large x$, this distribution is defined for the shape parameters $\Large \xi \geq 0$ as:
+
+$$
+\Large
+g(x; \xi \geq 0) = 1- (1 + x \xi/\beta)^{-1/\xi}
+$$
+
+
+and when the shape parameter $\Large \xi = 0$, the GPD becomes the exponential distribution dependent only on the scale parameter $\beta$:
+
+$$
+\Large
+g(x; \xi = 0) = 1 - exp(-x/\beta).
+$$
+
+Now for one reason for GPD's notoriety...
+
+- If $\Large u$ is an upper (very high) threshold, then the excess of threshold function for the GPD is
+
+$$
+\Large
+e(u) = \frac{\beta + \xi u}{1 - \xi}.
+$$
+
+- This simple measure is _linear_ in thresholds. 
+- It will allow us to visualize where rare events begin (see McNeil, Embrechts, and Frei (2015, chapter 5)). 
+- we often exploit this property when we look at operational loss data.
+- Here is a mean excess loss plot for the `loss.rf` data. If there is a straight-line relationship after a threshold, then we have some evidence for the existence of a GPD for the tail.
+
+### Mean Excess Loss
+
+```{r, echo=FALSE}
+# mean excess plot to determine thresholds for extreme event management
+data <- as.vector(loss.rf) # data is purely numeric
+umin <-  min(data)         # threshold u min
+umax <-  max(data) - 0.1   # threshold u max
+nint <- 100                # grid length to generate mean excess plot
+grid.0 <- numeric(nint)    # grid store
+e <- grid.0                # store mean exceedances e
+upper <- grid.0            # store upper confidence interval
+lower <- grid.0            # store lower confidence interval
+u <- seq(umin, umax, length = nint) # threshold u grid
+alpha <- 0.95                  # confidence level
+for (i in 1:nint) {
+    data <- data[data > u[i]]  # subset data above thresholds
+    e[i] <- mean(data - u[i])  # calculate mean excess of threshold
+    sdev <- sqrt(var(data))    # standard deviation
+    n <- length(data)          # sample size of subsetted data above thresholds
+    upper[i] <- e[i] + (qnorm((1 + alpha)/2) * sdev)/sqrt(n) # upper confidence interval
+    lower[i] <- e[i] - (qnorm((1 + alpha)/2) * sdev)/sqrt(n) # lower confidence interval
+  }
+mep.df <- data.frame(threshold = u, threshold.exceedances = e, lower = lower, upper = upper)
+loss.excess <- loss.rf[loss.rf > u]
+# Voila the plot => you may need to tweak these limits!
+renderPlotly({
+p <- ggplot(mep.df, aes( x= threshold, y = threshold.exceedances)) + geom_line() + geom_line(aes(x = threshold, y = lower), colour = "red") + geom_line(aes(x = threshold,  y = upper), colour = "red") + annotate("text", x = 10, y = 10, label = "upper 95%") + annotate("text", x = 10, y = -5, label = "lower 5%")
+ggplotly(p)
+})
+```
+
+### GPD Fits and Starts
+
+```{r, echo=FALSE}
+#library(QRM)
+alpha.tolerance <- 0.95
+u <- quantile(loss.rf, alpha.tolerance , names=FALSE)
+fit <- fit.GPD(loss.rf, threshold=u) # Fit GPD to the excesses
+xi.hat <- fit$par.ests[["xi"]] # fitted xi
+beta.hat <- fit$par.ests[["beta"]] # fitted beta
+data <- loss.rf
+n.relative.excess <- length(loss.excess) / length(loss.rf) # = N_u/n
+VaR.gpd <- u + (beta.hat/xi.hat)*(((1-alpha.tolerance) / n.relative.excess)^(-xi.hat)-1) 
+ES.gpd <- (VaR.gpd + beta.hat-xi.hat*u) / (1-xi.hat)
+n.relative.excess <- length(loss.excess) / length(loss.rf) # = N_u/n
+VaR.gpd <- u + (beta.hat/xi.hat)*(((1-alpha.tolerance) / n.relative.excess)^(-xi.hat)-1) 
+ES.gpd <- (VaR.gpd + beta.hat-xi.hat*u) / (1-xi.hat)
+# Plot away
+renderPlotly({
+  VaRgpd.text <- paste("GPD: Value at Risk =", round(VaR.gpd, 2))
+  ESgpd.text <- paste("Expected Shortfall =", round(ES.gpd, 2))
+  title.text <- paste(VaRgpd.text, ESgpd.text, sep = " ")
+  loss.plot <- ggplot(loss.rf.df, aes(x = Loss, fill = Distribution)) + geom_density(alpha = 0.2)
+  loss.plot <- loss.plot + geom_vline(aes(xintercept = VaR.gpd), colour = "blue", linetype = "dashed", size = 0.8)
+  loss.plot <- loss.plot + geom_vline(aes(xintercept = ES.gpd), colour = "blue", size = 0.8) 
+  #+ annotate("text", x = 300, y = 0.0075, label = VaRgpd.text, colour = "blue") + annotate("text", x = 300, y = 0.005, label = ESgpd.text, colour = "blue")
+  loss.plot <- loss.plot + xlim(0,20) + ggtitle(title.text)
+  ggplotly(loss.plot)
+})
+```
+
+### Confidence and Risk Measures
+
+```{r, echo=FALSE}
+showRM(fit, alpha = 0.99, RM = "ES", method = "BFGS")
+```
+
+
+Optimization
+==========================================================
+row {.tabset}
+----------------------------------------------------------
+
+### If that wasn't enough...
+
+Stylized market facts indicate
+
+- Allocation across various component of loss drivers requires both body and tail considerations
+- Pessisimistic risk measurement requires some sort of distortion measure to assess the probability of good and bad news
+
+So that ...
+
+- Bassett et al.(2004) show that the mean-expected shortfall efficient portfolio problem is equivalent to a quantile regression with linear constraints.
+- Enlarge scope of expected utility from monetary and probabality to include an assessment (distortion) of probability.
+- Choquet integrals build on Lebesgue measures by inflating or deflating the probabilities by the rank order of the outcomes.
+- Expected shortfall is an example of a Choquet, rank-ordered, criterion.
+
+### Pessimism Reigns
+
+- A risk measure $\Large \rho$ is pessistic if, for some probability measure $\Large \phi$ on $\Large [0,1]$, 
+$$
+\Large
+\rho(L) = \int_0^1 \rho_{u}(L) \phi(u) du.
+$$
+
+- For expected shortfall, $\Large \phi(u) = (1-\alpha)^{-1}I_{(u\geq\alpha)}$: equal weight is placed on all quantiles beyond the $\alpha$-quantile.
+- Suppose we have a loss portfolio with position weights $\Large \pi$ and losses $X$ so that total loss is $\Large L = X\,'\pi$ with mean loss $\Large \mu(L)$. Let's choose loss weights to minimize
+$$
+\Large
+min_{\pi}\,[\rho_{\alpha}(L) - \lambda \mu(L)] \,\, s.t.\, \mu(L)=\mu_0, \,\, 1^T\pi = 1
+$$
+
+where the weights add up to 1 and we try to achieve a minimum return $\Large \mu_0$.
+
+- Taking this formulation to a sample version for $\Large n$ observations of losses, we get
+$$
+\Large
+min_{\beta, \xi}\sum_{k=1}^m \, \sum_{i=1}^n \, \nu_k \rho_{\alpha}(X_{i1}-\sum_{j=2}^p (x_{i1}-x_{ij}\beta_{j})-\xi_k))
+$$
+
+$$
+\Large
+s.t.\, \bar{X}\,'\pi(\beta) = \mu_0
+$$
+
+- In this approach, there are $\Large m$ weights $\Large \nu$ that pull together $\Large m$ different sets of portfolio weightings. The $\Large \xi$ terms represent $\Large m$ different intercepts, one for each $\Large \nu_k$ weight. 
+- There are $\Large p$ assets or loss categories here. We use the first asset, $\Large i = 1$ as the "numerarire" or benchmark asset. We measure returns on assets 2 to $\Large p$ relative to the first asset. The weights for assets 2 to $\Large p$ are the regression coeffients $\Large \beta$. the weight for the first asset uses the adding up constraint so that
+
+$$
+\Large
+\pi_1 = 1 - \sum_{j=2}^p \pi_j
+$$
+
+
+The corresponding Markowitz (1952) approach is
+$$
+\Large
+min_{\beta, \xi} \, \sum_{i=1}^n (X_{i1}-\sum_{j=2}^p (x_{i1}-x_{ij})\beta_{j}-\xi))^2
+$$
+subject to the constraint
+
+$$
+\Large
+s.t.\, \bar{X}\,'\pi = \mu_0
+$$
+
+- We model distortions using weighted quantiles.
+- The Choquet criterion ends up using a weighted average of quantile allocations across assessed probabilities to express preferences.
+- Mimimize a weighted sum of quantile regression objective functions using the specified $\alpha$ quantiles. 
+- The model permits distinct intercept parameters at each of the specified taus, but the slope parameters are constrained to be the same for all $\Large \alpha$s. 
+- This estimator was originally suggested to the Roger Koenker by Bob Hogg in one of his famous blue book notes of 1979. 
+- The algorithm used to solve the resulting linear programming problems is either the Frisch Newton algorithm described in Portnoy and Koenker (1997), or the closely related algorithm described in Koenker and Ng(2002) that handles linear inequality constraints. 
+- Linear inequality constraints can be imposed.
+
+```{r  mysize=TRUE, size='\\footnotesize', echo = FALSE}
+library(quantreg)
+x <- data.r/100
+n <- nrow(x)
+p <- ncol(x)
+alpha <-  c(0.1, 0.3) # quantiles
+w <-  c(0.3, 0.7) # distortion weights
+lambda <- 100 # Lagrange multiplier for adding up constraint
+m <- length(alpha)
+# error handling: if (length(w) != m) stop("length of w doesn't match length of alpha")
+xbar <- apply(x, 2, mean)
+mu.0 <-  mean(xbar)
+y <- x[, 1] #set numeraire
+r <- c(lambda * (xbar[1] - mu.0), -lambda * (xbar[1] - mu.0))
+X <- x[, 1] - x[, -1]
+R <- rbind(lambda * (xbar[1] - xbar[-1]), -lambda * (xbar[1] - xbar[-1]))
+R <- cbind(matrix(0, nrow(R), m), R)
+f <- rq.fit.hogg(X, y, taus = alpha, weights = w, R = R, r = r)
+fit <- f$coefficients
+# transform regression coeff to portfolio weights
+pihat <- c(1 - sum(fit[-(1:m)]), fit[-(1:m)]) 
+x <- as.matrix(x)
+yhat <- x %*% pihat # predicted 
+etahat <- quantile(yhat, alpha)
+muhat <- mean(yhat)
+qrisk <- 0
+for (i in 1:length(alpha)) qrisk <- qrisk + w[i] * sum(yhat[yhat < etahat[i]])/(n * alpha[i])
+qrisk
+pihat
+```
+
+Trying a different distortion
+
+```{r  mysize=TRUE, size='\\footnotesize', echo = FALSE}
+library(quantreg)
+#library(dplyr) # use data.df now
+alpha <- 0.95
+u <- quantile(data.df$returns.elec, alpha )
+x <- data.df.nd[data.df.nd$returns.elec < u, 2:4]/100
+n <- nrow(x)
+p <- ncol(x)
+alpha <-  c(0.01, 0.1) # quantiles at lower (negative) tail
+w <-  c(0.95, 0.05) # distortion weights
+lambda <- 100 # Lagrange multiplier for adding up constraint
+m <- length(alpha) #alpha and w length must be the same
+xbar <- apply(x, 2, mean)
+mu.0 <-  mean(xbar)
+y <- x[, 1] #set numeraire
+r <- c(lambda * (xbar[1] - mu.0), -lambda * (xbar[1] - mu.0))
+X <- x[, 1] - x[, -1] # set up design matrix of adjusted all but numeraire returns
+R <- rbind(lambda * (xbar[1] - xbar[-1]), -lambda * (xbar[1] - xbar[-1])) # constraints
+R <- cbind(matrix(0, nrow(R), m), R) #augmented constraints
+f <- na.omit(rq.fit.hogg(X, y, taus = alpha, weights = w, R = R, r = r)) #Bob Hogg estimator
+fit <- f$coefficients
+# transform regression coeff to portfolio weights
+pihat <- c(1 - sum(fit[-(1:m)]), fit[-(1:m)]) 
+x <- as.matrix(x)
+yhat <- x %*% pihat # predicted 
+(etahat <- quantile(yhat, alpha))
+(muhat <- mean(yhat))
+qrisk <- 0
+for (i in 1:length(alpha)) qrisk <- qrisk + w[i] * sum(yhat[yhat < etahat[i]])/(n * alpha[i])
+qrisk
+pihat
+```
+
+### Extreme Portfolio Risk Measures
+
+```{r, echo=FALSE}
+mu.0 <- xbar
+mu.P <- seq(-.0005, 0.0015, length = 100) ## set of 300 possible target portfolio returns
+qrisk.P <-  mu.P ## set up storage for quantile risks of portfolio returns
+weights <-  matrix(0, nrow=300, ncol = ncol(data.r[,c(-4,-5)])) ## storage for portfolio weights
+colnames(weights) <- names(data.r)
+for (i in 1:length(mu.P))
+{
+  mu.0 <-  mu.P[i]  ## target returns
+  result <- qrisk(x, mu = mu.0)
+  qrisk.P[i] <- -result$qrisk # convert to loss risk already weighted across alphas
+  weights[i,] <-  result$pihat
+}
+qrisk.mu.df <- data.frame(qrisk.P = qrisk.P, mu.P = mu.P )
+mu.P <- qrisk.mu.df$mu.P
+mu.free <-  .001842/252 ## input value of risk-free interest rate
+sharpe <- ( mu.P-mu.free)/qrisk.P ## compute Sharpe's ratios
+ind <-  (sharpe == max(sharpe)) ## Find maximum Sharpe's ratio
+ind2 <-  (qrisk.P == min(qrisk.P)) ## find the minimum variance portfolio
+ind3 <-  (mu.P > mu.P[ind2]) ## find the efficient frontier (blue)
+col.P <- ifelse(mu.P > mu.P[ind2], "blue", "grey")
+weights.extr <- weights[ind,] # for use in calculating tengency risk measures
+qrisk.mu.df$col.P <- col.P
+# price.last <- as.numeric(tail(data[, -1], n=1))
+# Specify the positions
+position.rf <- weights.extr #c(1/3, 1/3, 1/3)
+# And compute the position weights
+w <- position.rf * price.last
+# Fan these  the length and breadth of the risk factor series
+weights.rf <- matrix(w, nrow=nrow(data.r[,c(-4,-5)]), ncol=ncol(data.r[,c(-4,-5)]), byrow=TRUE)
+#head(rowSums((exp(data.r/100)-1)*weights.rf), n=3)
+## We need to compute exp(x) - 1 for very small x: expm1 accomplishes this
+#head(rowSums((exp(data.r/100)-1)*weights.rf), n=4)
+loss.rf <- -rowSums(expm1(data.r[,c(-4,-5)]/100) * weights.rf)
+alpha.tolerance <- 0.95
+u <- quantile(loss.rf, alpha.tolerance, names = FALSE)
+fit.extr <- fit.GPD(loss.rf, threshold = u)
+renderPlot({
+  showRM(fit.extr, alpha = alpha.tolerance, RM = "ES", method = "BFGS")
+})
+```
+
+### Portfolio Analytics: the Markowitz model: default
+
+```{r, echo=FALSE}
+library(quadprog)
+
+R <- returns[,1:3]/100
+quantile_R <- quantile(R[,1], 0.95)
+#R <- subset(R, nickel > quantile_R, select = nickel:aluminium)
+names.R <- colnames(R)
+mean.R <-  apply(R,2,mean)
+cov.R <-  cov(R)
+sd.R <-  sqrt(diag(cov.R)) ## remember these are in daily percentages
+#library(quadprog)
+Amat <-  cbind(rep(1,3),mean.R)  ## set the equality constraints matrix
+mu.P <- seq(min(mean.R), max(mean.R), length = 300)  ## set of 300 possible target portfolio returns
+#mu.P <- seq(0.5*quantile_R, max(R), length = 100)  ## set of 300 possible target portfolio returns
+sigma.P <-  mu.P ## set up storage for std dev's of portfolio returns
+weights <-  matrix(0, nrow=300, ncol = ncol(R)) ## storage for portfolio weights
+colnames(weights) <- names.R
+for (i in 1:length(mu.P))
+{
+  bvec <- c(1,mu.P[i])  ## constraint vector
+  result <- solve.QP(Dmat=2*cov.R,dvec=rep(0,3),Amat=Amat,bvec=bvec,meq=2)
+  sigma.P[i] <- sqrt(result$value)
+  weights[i,] <- result$solution
+}
+sigma.mu.df <- data.frame(sigma.P = sigma.P, mu.P = mu.P )
+mu.free <-  .002127/252 ## input value of daily risk-free interest rate
+sharpe <- ( mu.P-mu.free)/sigma.P ## compute Sharpe's ratios
+ind <-  (sharpe == max(sharpe)) ## Find maximum Sharpe's ratio
+ind2 <-  (sigma.P == min(sigma.P)) ## find the minimum variance portfolio
+ind3 <-  (mu.P > mu.P[ind2]) ## finally the efficient frontier
+col.P <- ifelse(mu.P > mu.P[ind2], "blue", "grey")
+sigma.mu.df$col.P <- col.P
+renderPlotly({
+p <- ggplot(sigma.mu.df, aes(x = sigma.P, y = mu.P, group = 1)) + geom_line(aes(colour=col.P, group = col.P)) + scale_colour_identity() # + xlim(0, max(sd.R*1.1))  + ylim(0, max(mean.R)*1.1) + 
+p <- p + geom_point(aes(x = 0, y = mu.free), colour = "red")
+options(digits=4)
+p <- p + geom_abline(intercept = mu.free, slope = (mu.P[ind]-mu.free)/sigma.P[ind], colour = "red")
+p <- p + geom_point(aes(x = sigma.P[ind], y = mu.P[ind], pch="*")) 
+p <- p + geom_point(aes(x = sigma.P[ind2], y = mu.P[ind2], pch="-")) ## show min var portfolio
+p <- p + annotate("text", x = sd.R[1], y = mean.R[1], label = names.R[1]) + annotate("text", x = sd.R[2], y = mean.R[2], label = names.R[2]) + annotate("text", x = sd.R[3], y = mean.R[3], label = names.R[3])
+p	### ggplotly(p)
+})
+```
+
+### Portfolio Analytics: the Markowitz model: no short
+
+```{r, echo=FALSE}
+library(quadprog)
+
+R <- returns[,1:3]/100
+quantile_R <- quantile(R[,1], 0.95)
+#R <- subset(R, nickel > quantile_R, select = nickel:aluminium)
+names.R <- colnames(R)
+mean.R <-  apply(R,2,mean)
+cov.R <-  cov(R)
+sd.R <-  sqrt(diag(cov.R)) ## remember these are in daily percentages
+#library(quadprog)
+Amat <-  cbind(rep(1,3),mean.R,diag(1,3))  ## set the equality constraints matrix
+mu.P <- seq(min(mean.R), max(mean.R), length = 300)  ## set of 300 possible target portfolio returns
+#mu.P <- seq(0.5*quantile_R, max(R), length = 100)  ## set of 300 possible target portfolio returns
+sigma.P <-  mu.P ## set up storage for std dev's of portfolio returns
+weights.x <-  matrix(0, nrow=300, ncol = ncol(R)) ## storage for portfolio weights.x
+colnames(weights.x) <- names.R
+for (i in 1:length(mu.P))
+{
+  bvec <- c(1,mu.P[i],rep(0,3))  ## constraint vector
+  result <- solve.QP(Dmat=2*cov.R,dvec=rep(0,3),Amat=Amat,bvec=bvec,meq=2)
+  sigma.P[i] <- sqrt(result$value)
+  weights.x[i,] <- result$solution
+}
+sigma.mu.df <- data.frame(sigma.P = sigma.P, mu.P = mu.P )
+mu.free <-  .002127/252 ## input value of daily risk-free interest rate
+sharpe <- ( mu.P-mu.free)/sigma.P ## compute Sharpe's ratios
+inx <-  (sharpe == max(sharpe)) ## Find maximum Sharpe's ratio
+inx2 <-  (sigma.P == min(sigma.P)) ## find the minimum variance portfolio
+indx3 <-  (mu.P > mu.P[inx2]) ## finally the efficient frontier
+col.P <- ifelse(mu.P > mu.P[inx2], "blue", "grey")
+sigma.mu.df$col.P <- col.P
+renderPlotly({
+p <- ggplot(sigma.mu.df, aes(x = sigma.P, y = mu.P, group = 1)) + geom_line(aes(colour=col.P, group = col.P)) + scale_colour_identity() # + xlim(0, max(sd.R*1.1))  + ylim(0, max(mean.R)*1.1) + 
+p <- p + geom_point(aes(x = 0, y = mu.free), colour = "red")
+options(digits=4)
+p <- p + geom_abline(intercept = mu.free, slope = (mu.P[inx]-mu.free)/sigma.P[inx], colour = "red")
+p <- p + geom_point(aes(x = sigma.P[inx], y = mu.P[inx], pch="+")) 
+p <- p + geom_point(aes(x = sigma.P[inx2], y = mu.P[inx2], pch="-")) ## show min var portfolio
+p <- p + annotate("text", x = sd.R[1], y = mean.R[1], label = names.R[1]) + annotate("text", x = sd.R[2], y = mean.R[2], label = names.R[2]) + annotate("text", x = sd.R[3], y = mean.R[3], label = names.R[3])
+p	### ggplotly(p)
+})
+```
+
+### Markowitz Model Summary
+
+The goal is to factor volatility and risk into a decision that results in a portfolio that suits the needs of the objective.
+ 
+
+Using that idea and a ruler we drew a line to the efficient frontier to discover the best portfolio of exposures for a hypothetical working capital position: the one that maximizes the return for the risk, the ratio that William Sharpe figured out in 1964
+
+ind <-  (sharpe == max(sharpe)) The average return earned in excess of the risk-free rate per unit of volatility or total risk. 
+
+ind2 <-  (sigma.P == min(sigma.P)) indicates the point of minimum price volatility for the overall portfolio
+
+ind3 <-  (mu.P > mu.P[ind2]) is the optimal portfolio setting that offers the greatest expected return for a defined level of risk (the curve, plotted line)
+
+The graph depicts the point at which each of these occur In the context of the Markowitz theory an optimal set of weights is one in which the portfolio achieves an acceptable baseline expected rate of return with minimal volatility. 
+
+Using that idea and a ruler we drew a line to the efficient frontier to discover the best portfolio of exposures for a hypothetical working portfolio. 
+
+With the default model. 
+
+When we short some commodity we open up more funds for the purchase of other commodities, because short a commodity we receive the dollar value of that commodity today and we can turn around and re-invest those dollars for another commodity or other investments.  
+ 
+
+In this case the results of the portfolio analysis suggest that the no short and the default investment strategy is essentially the same.
+
+Conclusion
+=======================================================================
+
+row 
+-------------------------------------------------------------------------
+
+### Skills and Tools
+
+1. Packages: ggplot, scales, quadprog, quantreg, shiny, flexdashboard, qrmdata, xts, matrixStats, zoo, QRM, plotly, psych, moments, and corrplot
+
+2. Skills: 
+
+    - Partial Auto Correlation, and Auto Correlation Functions to compare the commodities reaction with the change of the other.
+
+    - Detail Correlation Matrices to view the relationships between commodities 
+
+    - Rolling Correlation allows us to look at the history of certain commodities correlation
+
+    - Dependecy Graphics give us an idea of how two commodity volitilies will interact with one another 
+
+    -  Mean Excess Loss shows us the distribution of our outliers within the data, and allows us to make allocation decisions based on the graphics
+
+    - GPD fits and starts is a graphic representation of the extremes tail distributions which allows us to see how heavy of an impact the extreme tails have on our conclusions
+
+3. Portfolio Analytics: 
+
+    - Markowitz tangency - optimizing our portfolio at tangecy value for each commodity
+
+    - Efficient portfolio mix with risk-free asset: by incoprorating our risk-free asset (Treasury Bill), we are given the ability to compare and contrast returns, volatility, and other portfolio attributes with our commodities in question
+
+    - Expected shortfall at a given confidence level is the expected return on the portfolio in the worst % of cases
+
+    - Value at Risk estimates how much a set of investments might lose, given normal market conditions, in a set time period such as a day with a given confidence interval
+
+### Portfolio Weights
+
+For the working capital accounts:
+
+By distribution our working capital of $450 million across the weights for the Markowitz tangency [default] portfolio we get the following:
+
+
+-	$0 denominated in USD
+
+-	$110 million in Electricity
+
+-	$908 million in Copper
+
+-	($568) million in Natural Gas
+
+-	$450 million in Total
+
+The weights for the Markowitz tangency [default] portfolio ("*") are
+
+```{r echo = FALSE}
+library(scales)
+weights[ind,]
+name <- colnames(weights)
+posn <- ifelse((weights[ind,]<0), "go short (sell)", "go long, (buy)")
+value <- percent(abs(weights[ind,]))
+```
+
+The weights in our default Markowitz model show a copper heavy allocation of assets to the portfolio, which gives us the optimal allocation to the portfolio, with little consideration to risk. All considering, the default approach would drive us to take an alternate avenue to alleviate portfolio risk.
+
+
+Our second optimization we begin to add constraints. Here we are taking a minimum variance of prices to alleviate any long-term risks and additionally optimize our portfolio. The weights for the Markowitz tangency [min var] portfolio (“-“) are:
+
+-	$0 denominated in USD
+
+-	$12 million in Electricity
+
+-	$355 million in Copper
+
+-	$84 million in Natural Gas
+
+-	$450 million in Total
+
+The weights for the Markowitz tangency [min var]  portfolio  ("-") are
+
+```{r echo = FALSE}
+library(scales)
+weights[ind2,]
+name <- colnames(weights)
+posn <- ifelse((weights[ind2,]<0), "go short (sell)", "go long, (buy)")
+value <- percent(abs(weights[ind2,]))
+```
+
+Observing the minimum variance Markowitz we can view a more diverse portfolio, well spread out unlike the default or ‘no short’ portfolio weights. Risk level would be considered low for the holding party comparatively to the other two approaches. 
+
+
+Finally, we take out any short-term volatility within the market to optimize the portfolio over time. The weights for the Markowitz tangency [no short] portfolio (“+”) are
+With constraints - Markowitz tangency [min var] portfolio
+
+-	$0 denominated in USD
+
+-	$450 million in Electricity
+
+-	$0 million in Copper
+
+-	$0 million in Natural Gas
+
+-	$450 million in Total
+
+The weights for the Markowitz tangency [no short] portfolio ("+") are
+
+```{r echo = FALSE}
+library(scales)
+weights.x[inx,]
+name <- colnames(weights.x)
+posn <- ifelse((weights.x[inx,]<0), "go short (sell)", "go long, (buy)")
+value <- percent(abs(weights.x[inx,]))
+```
+
+We see the same distribution as our default portfolio with the 'no short' model.
+
+### Business Remarks
+
+-	The working capital account of $450 million USD should be allocated as follows: buy $12 million in electricity, $355 in copper, and $84 million in natural gas. We opted to use the Markowitz tangency [min variance] model given the current business circumstances we find ourselves in.
+
+-	Investing all $450 million of working capital as suggested by the no-default option to buy electricity would be far too risky for the company to take, especially since we are in bankruptcy. Also, this may create a shortage for natural gas if future demand exceeds current inhouse manufacturing capacity. This could result in additional liabilities for the company.
+
+-	On the other end of the spectrum, selling natural gas as suggested by the default option may also create the same type of risk. Given the climate change phenomenon, PG&E may see a higher demand for natural gas in the hotter months than normal. This may lead to a shortage for natural gas and (again) additional liabilities for the company.  
+
+-	A more sensible approach is the min variance option. This approach suggests that the company spend about 21% of the working capital to buy electricity ($12 million) and natural gas ($84 million). This additional capacity can be used to hedge against any sudden increase in demand for either of these commodities. It can also be used to offset any inhouse production losses that may have resulted from the wildfires. 
+
+-	Additionally, the min variance model suggests that the bulk of the working capital (about 89%) should be invested in procuring copper ($355 million). This intuitively makes sense since the company will need to invest in its aging infrastructure and infrastructure that damaged or destroyed in the wildfires.
+
+-	Lastly, we recommend the company to implement a procurement policy for these commodities based on a tolerable risk of 95%. For electricity, the value at risk is 45.42 and the expected shortfall is 59.65. For copper, the value at risk is 7.88 and the expected short fall is 14.46. For natural gas, the value at risk is 14.64 and the expected short fall is 22.1.
+
+
+
+
+
+References
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+### REFERENCES
+
+**References**
+
+Artzner, P., F. Delbaen, J.-M. Eber, and D. Heath (1999), Coherent measures of
+risk, Mathematical Finance, 9:203???228.
+
+Bassett, G., R. Koenker, G. Kordas (2004), Pessimistic Portfolio Allocation and Choquet Expected Utility, Journal of Financial Econometrics, 2, 477-492.
+
+Choquet, G. (1953), Theory of Capacities, Annales de l'Institut Fourier 5, pages 131-295.
+
+Cox, D. (1962), Comment on L. J. Savage's Lecture "Subjective Probability and Statistical Practice", in The Foundations of Statistical Inference (ed. by G. Barnard and D. Cox), London: Methuen.
+
+Koenker, R. and Ng, P (2003), Inequality Constrained Quantile Regression, preprint.
+
+Koenker, Roger (2005), Quantile Regression (Econometric Society Monographs), Cambridge University Press.
+
+Koenker, R. (1984), A note on L-estimates for linear models, Stat. and Prob Letters, 2, 323-5.
+
+Markowitz, Harry (1952), Portfolio Selection, The Journal of Finance, Vol. 7, No. 1, pp. 77-91.
+
+McNeill, Alexander J., Rudiger Frey, and Paul Embrechts (2015), Quantitative Risk Management: Concepts, Techniques and Tools. Revised Edition. Princeton: Princeton University Press.
+
+Polbennikov, S. and B. Melenberg (2005), Mean-Coherent Risk and Mean-Variance Approaches in Portfolio Selection: an Empirical Comparison, Discussion Papers 2005 ??? 013, Tilburg University.
+
+Portnoy, S. and Koenker, R. (1997), The Gaussian Hare and the Laplacean Tortoise: Computability of Squared-error vs Absolute Error Estimators, (with discussion). Statistical Science, (1997) 12, 279-300.
+
+Rockafellar, R. T. and S. Uryasev (2000), Optimization of conditional value-at-risk.
+The Journal of Risk, 2:21???41.
+
+Ruppert, David and David S. Matteson (2014), Statistics and Data Analysis for Financial Engineering with R Examples, Second Edition. New York: Springer. 
+
+Schmeidler, D. (1989), Subjective Probability and Expected Utility Without Additivity, Econometrica, 57, 571-587.
+
+Sharpe, William F. (1966), Mutual Fund Performance, Journal of Business, January 1966, 119-138.
+
+Tasche, D. (2000), Conditional expectation as a quantile derivative, Preprint, TU-Munchen. (Available from arXiv math/0104190.)
+
+Tversky, A and Kahneman, D. (1992), Advances in Prospect Theory: Cumulative representation of uncertainty. Journal of Risk and Uncertainty, 5(4): 297-323.
+
+von Nuemann, J. and Morgenstern, O. (1944), Theory of games and economic behaviour, Princeton University Press. 
+
+Zou, Hui and and Ming Yuan (2008), Composite quantile regression and the Oracle model selection theory, Annals of Statistics, 36, 1108-11120.
+
+Row {data-height=225}
+-----------------------------------------------------------------------
+### Background and Current Event Articles
+
+Siemaszko, Corkey. "Pacific Gas & Electric Stock Price Tumbles Ahead of Lawsuit by California Fire Victims." NBCNews.com, NBCUniversal News Group, 14 Nov. 2018, 14.52, www.nbcnews.com/news/us-news/pacific-gas-electric-stock-price-tumbles-ahead-lawsuit-california-fire-n936336.
+
+Lin, Judy. "What Happens If PG&E Goes Bankrupt?" East Bay Times, East Bay Times, 5 Jan. 2019, www.eastbaytimes.com/2018/12/03/what-happens-if-pge-goes-bankrupt/.
+
+Shaban, Hamza, and Steven Mufson. "PG&E to File for Bankruptcy Following Devastating California Wildfires." The Washington Post, WP Company, 14 Jan. 2019, www.washingtonpost.com/technology/2019/01/14/pge-file-bankruptcy-following-devastating-california-wildfires/?noredirect=on&utm_term=.0f1f9b032b58.
+
+Roth, Sammy. "PG&E Should Get out of the Energy Sales Business, Local Governments Say." Los Angeles Times, Los Angeles Times, 14 Feb. 2019, www.latimes.com/business/la-fi-pge-bankruptcy-energy-cca-20190214-story.html.
+
+"PG&E Company Profile." Company Profile, www.pge.com/en_US/about-pge/company-information/profile/profile.page.
+
+"Electric Power Markets - National Overview." FERC, 13 Apr. 2017, www.ferc.gov/market-oversight/mkt-electric/overview.asp.
+
+"Natural Gas: Our Work." International Energy Agency, 2018, www.iea.org/topics/naturalgas/.
+
+Pines, Lawrence. "The Commodity.com Guide to Copper." Commodity.com, 21 Sept. 2018, www.commodity.com/precious-metals/copper/.
+
+Member Contribution
+=======================================================================
+**Joe Hernandez**
+
+For this project, my contributions to the group were both the foundation and structure to its success. For the inception of a project idea, I found the topic regarding PG&E while reading an article about its bankruptcy and wondered how that would affect the energy market. In the proposal, I provided questions that were more geared toward customers but that changed to more of a market perspective as the course showed additional methods of analysis. My leadership and organizational skills contributed in assigning and preparing team members for upcoming workloads for both the analysis and presentation. When researching data, I was able to collect Natural Gas and stock prices while allowing my fellow team members to gather data for the electricity, copper, and Treasury bill prices. During Assignments 2 - 4, I served as the coder for the group; however, for this project, I shifted my responsibility to become more of a mentor and guide my team to code the content to achieve the results they desired. Despite my departure from the initial coding, my contribution ensured we had a presentable format ready for the presentation and added new features. After the presentation, I noted many of the additional content provided by other groups and added features I found that would add value to the analysis. I coded the additional features and content to the project and communicated the changes to the team for their inputs to be added and finalized to the project. 
