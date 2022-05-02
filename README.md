@@ -1,7 +1,7 @@
 # SU-MSADS-PortfolioMilestone
 This is the Graduation Portfolio Milestone for the Syracuse University School of Information Studies M.S. degree in Applied Data Science showcasing through course assignments and projects my capacity and prowess in meeting the learning goals of the program.
 ## File Contents
-### 1. Portfolio Milestone Write-Up
+### 1. Portfolio Milestone Write-Up & Presentation
 >A summary of the major takeaways from the M.S. in Applied Data Science program and the years following. This reflection will feature courses attended along with assignments and projects which helped meet the learning objectives required for successful comprehension of the program.
 ### 2. Professional Resume
 >Professional resume: Last updated February 2022
