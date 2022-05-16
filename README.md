@@ -9,10 +9,10 @@ This is the Graduation Portfolio Milestone for the Syracuse University School of
 >Compilation of all projects mentioned in the write-up and presentation.
 - Statistical Methods in Information Systems Technology Assignments
 >>Compilation of course assignments and exam including feedback
-- Scripting for Data Analysis
->>Project providing descriptive analysis of the human waste concerns in San Francisco
 - Data Mining
 >>Compilation of course assignments and exam including feedback
+- Scripting for Data Analysis
+>>Project providing descriptive analysis of the human waste concerns in San Francisco
 - Financial Analysis
 >>Compilation of course assignments and exam including feedback <br />
 >>Recommendation of Pacific Gas and Electric investments for improved infrastructure
